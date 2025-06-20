@@ -1,13 +1,14 @@
 import requests
 import json
 from ollama_api import ask_ollama
-from memory_engine import retrieve_memory, add_memory
+from memory_engine import retrieve_memory, add_memory, client
 from chat_history import load_history, save_history
 from session_summary import summarize_session
 from promotion_tracker import should_run_promotion, update_promotion_time
 from memory_promoter import promote_summaries_to_facts as run_memory_promotion
 from fact_extractor import extract_and_store_facts
 from memory_promoter import compress_old_memory
+from compression_tracker import should_run_compression, update_compression_time
 
 
 # ----- region Memory Management -----
@@ -38,11 +39,14 @@ def memory_to_prompt(memory):
 def chat():
     user_id = input("Enter your username: ").strip()
     memory = load_user_memory(user_id)
+
+    # Only include static profile memory if nothing else is available
     retrieved_memory_prompt = memory_to_prompt(memory)
+    
 
     print(f"\n🤖 Welcome, {memory.get('user_name', user_id)}! Type 'exit' to quit.\n")
 
-    chat_history = load_history(user_id)
+    chat_history = []
 
     while True:
         user_input = input("You: ")
@@ -55,7 +59,9 @@ def chat():
         elif user_input.lower() == "/reflect":
             facts = retrieve_memory(user_id, "who is the user", top_k=10, memory_type="fact")
             if facts:
-                print("\n🧠 Reflection from memory:\n" + "\n".join(facts) + "\n")
+                print("\n🧠 Here's what I know about you:\n")
+                for f in facts:
+                    print(f"• {f['content']} (score: {round(f['score'], 2)})")              
             else:
                 print("🤷 I don't know anything about you yet.\n")
             continue
@@ -70,22 +76,39 @@ def chat():
             try:
                 summarize_session(user_id, chat_history)
             except Exception as e:
-                print(f"⚠️ Failed to summarize session: {e}")
+                print(f"⚠️ Failed to summarize session: {type(e).__name__}: {e}")
 
-            break
+            if should_run_compression(user_id):
+                print("🧹 Compressing old memory...")
+                compress_old_memory(user_id)
+                update_compression_time(user_id)
+
+            # 🧠 Check if we should promote summaries to facts
+            if should_run_promotion(user_id):
+                print("🔄 Running periodic memory promotion...")
+                run_memory_promotion(user_id)
+                update_promotion_time(user_id)
+
+            break   
 
         chat_history.append({"role": "user", "content": user_input})
         save_history(user_id, chat_history)
 
         # 🧠 Retrieve most recent session summary (1 max)
-        recent_summary = retrieve_memory(user_id, "previous conversation", top_k=1, memory_type="summary")
+        recent_summary = retrieve_memory(user_id, "previous conversation", top_k=5, memory_type="summary")
         summary_section = "\n".join([f"[PREVIOUS SESSION] {s}" for s in recent_summary]) if recent_summary else ""
 
-        # 🔹 Retrieve compressed memory
-        compressed_chunks = retrieve_memory(user_id, user_input, top_k=3, memory_type="compressed")
+        # 🔹 Retrieve and filter compressed memory
+        compressed_raw = retrieve_memory(user_id, user_input, top_k=5, memory_type="compressed")
+        compressed_chunks = [m["content"] for m in compressed_raw if m.get("score", 0) > 0.75]
 
-        # 🔸 Retrieve detailed fact memory
-        fact_chunks = retrieve_memory(user_id, user_input, top_k=3, memory_type="fact")
+        # 🔸 Retrieve and filter fact memory
+        fact_raw = retrieve_memory(user_id, user_input, top_k=5, memory_type="fact")
+        fact_chunks = [m["content"] for m in fact_raw if m.get("score", 0) > 0.75]
+
+        # 🧠 Determine if we should use static profile memory
+        use_static_profile = not (compressed_chunks or fact_chunks or recent_summary)
+        user_profile_section = f"\n\n[USER PROFILE]\n{retrieved_memory_prompt.strip()}" if use_static_profile else ""
 
         # 🧠 Combine with labels
         memory_chunks = []
@@ -113,9 +136,10 @@ def chat():
         - Be honest about what you know and don’t know.
         """
         full_prompt = (
+            f"User name: {user_id}\n\n" +  # 👈 Add this line
             instructions_for_memory_use.strip() +
             "\n\n[DEBUG MEMORY: If you reference memory, say exactly what you're referencing.]" +
-            "\n\n[USER PROFILE]\n" + retrieved_memory_prompt.strip() +
+            user_profile_section +
             "\n\n[CONTEXTUAL MEMORY]\n" + retrieved_text.strip() +
             "\n\nUser: " + user_input.strip()
         )
@@ -127,14 +151,3 @@ def chat():
         save_history(user_id, chat_history)
 
         print(f"Ollama: {reply}\n")
-
-        # 🧠 Check if we should promote summaries to facts
-        if should_run_promotion(user_id):
-            print("🔄 Running periodic memory promotion...")
-            run_memory_promotion(user_id)
-            update_promotion_time(user_id)
-
-
-        # 🧠 Optionally save the assistant’s new statements to memory
-        combined_turn = f"You: {user_input}\nAssistant: {reply}"
-        extract_and_store_facts(user_id, combined_turn)

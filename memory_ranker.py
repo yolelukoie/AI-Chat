@@ -17,6 +17,8 @@ def rank_memories(memories, reference_text, max_facts=5):
     """
     if not memories:
         return []
+    if len(memories) < 2:
+        return memories  # No need to rank a single memory
 
     memory_texts = [m["content"] for m in memories]
     all_texts = memory_texts + [reference_text]
@@ -25,6 +27,7 @@ def rank_memories(memories, reference_text, max_facts=5):
     memory_embeddings = embeddings[:-1]
     reference_embedding = embeddings[-1]
     similarities = util.cos_sim(memory_embeddings, reference_embedding).squeeze()
+
 
     now = datetime.datetime.utcnow()
     scored = []
