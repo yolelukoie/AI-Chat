@@ -1,6 +1,7 @@
 from helpers import *
 
 # command: ollama run llama3.2
+# others: py -m install
 
 def main():
     print("Welcome to the Ollama Chatbot!")
