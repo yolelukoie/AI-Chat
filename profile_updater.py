@@ -1,6 +1,8 @@
 import json
 import os
 import re
+from profile_vector_store import update_profile_vector
+
 
 PROFILE_FILE = "memory.json"
 
@@ -40,6 +42,7 @@ def update_static_profile(user_id: str, key, value):
             print(f"⚠️ Failed to parse removal: {e}")
         profile[user_id] = user_profile
         save_static_profile(profile)
+        update_profile_vector(user_id)
         return
 
     profile = load_static_profile()
@@ -93,4 +96,5 @@ def update_static_profile(user_id: str, key, value):
 
     profile[user_id] = user_profile
     save_static_profile(profile)
+    update_profile_vector(user_id)
     print(f"📌 Added to static profile: {key}: {value}")
