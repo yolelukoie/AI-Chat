@@ -1,18 +1,38 @@
 {
-    "Yana": {
-      "user_name": "Yana",
-      "language_preferences": ["English", "Russian"],
-      "interests": ["reading", "cooking", "neuroscience", "coding"]
-    },
-    "Stav": {
-      "user_name": "Stav",
-      "language_preferences": ["English", "Hebrew"],
-      "interests": ["chess", "cooking"]
-    },
-    "Vedana": {
-      "user_name": "Vedana",
-      "language_preferences": ["Russian", "English"],
-      "interests": ["anime", "Japan", "cosplay"]
-    }
+  "Yana": {
+    "user_name": "Yana",
+    "language_preferences": [
+      "English",
+      "Russian"
+    ],
+    "interests": [
+      "reading",
+      "cooking",
+      "neuroscience",
+      "coding"
+    ]
+  },
+  "Stav": {
+    "user_name": "Stav",
+    "language_preferences": [
+      "English",
+      "Hebrew"
+    ],
+    "interests": [
+      "chess",
+      "cooking"
+    ]
+  },
+  "Vedana": {
+    "user_name": "Vedana",
+    "language_preferences": [
+      "Russian",
+      "English"
+    ],
+    "interests": [
+      "anime",
+      "Japan",
+      "cosplay"
+    ]
   }
-  
+}
