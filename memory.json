@@ -10,7 +10,21 @@
       "cooking",
       "neuroscience",
       "coding"
-    ]
+    ],
+    "Age": 35,
+    "Location": "Tel aviv",
+    "Family": {
+      "Partner": "Stav",
+      "Children": [
+        "Vedana"
+      ],
+      "Pets": {
+        "Dogs": [
+          "Arti",
+          "Yuston"
+        ]
+      }
+    }
   },
   "Stav": {
     "user_name": "Stav",
@@ -33,6 +47,26 @@
       "anime",
       "Japan",
       "cosplay"
-    ]
+    ],
+    "Age": 13,
+    "Location": "Tel aviv",
+    "Hobbies": [
+      "Japanese music",
+      "anime",
+      "cosplay"
+    ],
+    "Family": {
+      "Partner": "Stav",
+      "Children": [
+        "Vedana"
+      ],
+      "Pets": [
+        "Dogs",
+        "Arti",
+        "Yuston"
+      ],
+      "Interaction Style": "Positive"
+    },
+    "Food Preferences": null
   }
 }

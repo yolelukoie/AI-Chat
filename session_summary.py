@@ -1,6 +1,47 @@
 from ollama_api import ask_ollama
 from memory_engine import add_memory
 from profile_updater import update_static_profile
+import json
+from profile_updater import load_static_profile
+
+
+def normalize_and_merge_facts(user_id: str, new_facts_text: str) -> dict:
+
+    existing_profile = load_static_profile().get(user_id, {})
+
+    prompt = f"""
+You're an assistant that merges new identity facts into an existing user profile.
+
+Goals:
+- Resolve duplicate fields like "Daughter" vs "Children", or Pets inside/outside Family.
+- Preserve all meaningful facts, but avoid redundant or outdated keys.
+- Return a clean nested JSON structure with keys like:
+  Age, Location, Family, Pets, Hobbies, Interests, Personality, Education, Occupation, Health, Food Preferences, etc.
+- All children go under Family -> Children.
+- All pets go under Family -> Pets.
+- Don't include "Name" or "Section" keys.
+- If a field already exists in the profile and isn't contradicted, keep it.
+- Output valid JSON only — no commentary.
+- Conversation style - if mentioned, overwrite it.
+
+User ID: {user_id}
+
+Existing profile:
+{json.dumps(existing_profile, indent=2)}
+
+New facts to integrate:
+{new_facts_text}
+
+Cleaned, merged JSON:
+"""
+    response = ask_ollama(prompt)
+    try:
+        return json.loads(response.strip())
+    except json.JSONDecodeError:
+        print("⚠️ LLM returned invalid JSON:")
+        print(response)
+        return existing_profile  # fallback
+
 
 def summarize_session(user_id, chat_history):
     # Convert to plain text for LLM
@@ -31,91 +72,59 @@ Note: This summary will be saved to memory for future reference.
 
 def extract_profile_facts_from_chat(full_chat: str, user_id: str):
     prompt = f"""
-You are a memory assistant.
+You are a memory assistant that extracts long-term identity-related facts about a user.
 
-Your job is to extract long-term identity-related facts about the user based on the conversation below.
-Return each fact in a strict structured format so it can be stored.
+Your task is to identify facts from the conversation and assign each to a meaningful category.
+Each fact must be stored as a structured key-value pair, using the category as the key.
 
-Use ONLY these formats:
+Only include facts that are:
+- Relevant to the user's identity (age, location, family, habits, etc.)
+- Clearly stated (no vague or speculative info)
+- Long-term or stable (not temporary emotions or small talk)
 
-✅ To add facts:
-• Key: Value
-• Section:
-  Subkey: Value1, Value2
-
-✅ To remove outdated or false facts:
-• Remove: Section -> Subkey -> Value
+✅ Format:
+• <Category>: <Value>
+• <Category>:
+    <Subkey>: <Value>
 
 Examples:
-
 • Age: 35
 • Location: Tel Aviv
-• Hobbies: Meditation
+• Hobbies: Gardening, Meditation
+• Food Preferences: Hates peanut butter
 • Family:
-  Partner: Stav
-  Daughter: Vedana
+    Partner: Stav
+    Daughter: Vedana
 • Pets:
-  Dogs: Arti, Yuston
+    Dogs: Arti, Yuston
 
-To remove:
-• Remove: Pets -> Dogs -> Yuston
-• Remove: Family -> Partner -> Stav
+❌ Do NOT include:
+- User’s name (assumed to be known)
+- Empty fields
+- Freeform summaries
+- Any uncategorized or vague observations
+- Categories from examples if they are not mentioned in the chat
+❌ Do NOT return prose. Use only bullet points in the format above.
 
-Do NOT mention what is missing.
-Only extract clear factual identity info or removal requests.
-
-⚠️ Do not summarize the conversation.
-⚠️ Only list clearly structured identity facts using "• Key: Value" or "• Section:\n  Subkey: Value"
+Explicitly extract conversation style preferences if mentioned or implied.
+Examples:
+• Conversation Style: Friendly
+• Conversation Style: More formal than casual
+• Conversation Style: add more jokes if we were very close friends
 
 Conversation:
 {full_chat}
 
-Facts (STRICT FORMAT ONLY — do not return prose or summaries):
+Facts:
 """
 
-    prompt = f"User name: {user_id}\n\n" + prompt
-    result = ask_ollama(prompt)
+    raw_facts_text = ask_ollama(prompt)
     print("\n📌 Extracted profile facts from chat:")
-    print(result)
+    print(raw_facts_text)
 
-    lines = result.splitlines()
-    facts = []
-    current_section = None
-    subitems = {}
+    normalized = normalize_and_merge_facts(user_id, raw_facts_text)
+    print("\n🧽 Normalized JSON to save:")
+    print(json.dumps(normalized, indent=2))
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        if stripped.lower().startswith("• remove:"):
-            try:
-                path = stripped.split(":", 1)[1].strip()
-                facts.append(("Remove", path))
-            except:
-                continue
-
-        elif stripped.startswith("•"):
-            if current_section:
-                facts.append((current_section, subitems))
-                current_section = None
-                subitems = {}
-
-            content = stripped.lstrip("•").strip()
-            if ":" in content:
-                key, value = content.split(":", 1)
-                if value.strip() == "":
-                    current_section = key.strip()
-                    subitems = {}
-                else:
-                    facts.append((key.strip(), value.strip()))
-
-        elif current_section and ":" in stripped:
-            subkey, value = stripped.split(":", 1)
-            subitems[subkey.strip()] = value.strip()
-
-    if current_section:
-        facts.append((current_section, subitems))
-
-    for key, value in facts:
+    for key, value in normalized.items():
         update_static_profile(user_id, key, value)
