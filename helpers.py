@@ -12,6 +12,8 @@ from compression_tracker import should_run_compression, update_compression_time
 from pathlib import Path
 from profile_updater import load_static_profile
 from profile_vector_store import profile_to_description
+from voice_interface import listen_and_transcribe, speak
+
 
 
 PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
@@ -49,7 +51,9 @@ def chat():
     chat_history = []
 
     while True:
-        user_input = input("You: ").strip()
+        print("You (speak)…")
+        user_input = listen_and_transcribe(language="en").strip()
+        print(f"You: {user_input!r}")
 
         if user_input.lower() in ("exit", "quit"):
             print("\n💬 Chat session ended. Summarizing...")
@@ -136,7 +140,7 @@ def chat():
                     dynamic.extend([f"• {f['content']}" for f in fact_mem])
 
                 other_prompt = (
-                    f"You were asked about user {mentioned_user}.\n Use this information to answer accurately. Be concise, honest, and don’t invent anything."
+                    f"You were asked about user {mentioned_user}.\n Pronouns in the next sentences like 'him' or 'her' are likely referring to this user. Use this information to answer accurately. Be concise, honest, and don’t invent anything."
                     f"\n[STATIC PROFILE]\n{static}"
                     f"\n\n[DYNAMIC MEMORY]\n{'\n'.join(dynamic) if dynamic else '(none found)'}"
                     f"\n\nUse these to personalize your answers.{style_instruction}"
@@ -145,6 +149,8 @@ def chat():
 
                 print(f"📎 Injecting profile for: {mentioned_user}")
                 reply = ask_ollama(other_prompt)
+                print(f"Llama: {reply}")
+                speak(reply)
                 chat_history.append({"role": "assistant", "content": reply})
                 save_history(user_id, chat_history)
                 print(f"Llama: {reply}\n")
@@ -177,6 +183,8 @@ def chat():
         )
 
         reply = ask_ollama(full_prompt)
+        print(f"Llama: {reply}")
+        speak(reply)
         chat_history.append({"role": "user", "content": user_input})
         save_history(user_id, chat_history)
         chat_history.append({"role": "assistant", "content": reply})

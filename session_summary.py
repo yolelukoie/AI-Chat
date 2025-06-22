@@ -55,11 +55,11 @@ def summarize_session(user_id, chat_history):
 
 Extract the key facts and preferences expressed by the user that would be useful to remember for future interactions.
 Summarize only relevant or meaningful parts of the conversation — avoid filler or small talk.
-
+Note: This summary will be saved to memory for future reference, don't ititiate a new conversation.
 Conversation:
 {full_chat}
 
-Note: This summary will be saved to memory for future reference.
+
 """
     summary = ask_ollama(summary_prompt)
 
@@ -78,7 +78,7 @@ Your task is to identify facts from the conversation and assign each to a meanin
 Each fact must be stored as a structured key-value pair, using the category as the key.
 
 Only include facts that are:
-- Relevant to the user's identity (age, location, family, habits, etc.)
+- Relevant to the current user's identity (age, location, family, habits, etc.)
 - Clearly stated (no vague or speculative info)
 - Long-term or stable (not temporary emotions or small talk)
 
@@ -98,19 +98,20 @@ Examples:
 • Pets:
     Dogs: Arti, Yuston
 
+Explicitly extract conversation style preferences if mentioned or implied.
+Examples:
+• Conversation Style: Friendly
+• Conversation Style: More formal than casual
+• Conversation Style: add more jokes if we were very close friends
+
 ❌ Do NOT include:
 - User’s name (assumed to be known)
 - Empty fields
 - Freeform summaries
 - Any uncategorized or vague observations
 - Categories from examples if they are not mentioned in the chat
+- facts about any other users
 ❌ Do NOT return prose. Use only bullet points in the format above.
-
-Explicitly extract conversation style preferences if mentioned or implied.
-Examples:
-• Conversation Style: Friendly
-• Conversation Style: More formal than casual
-• Conversation Style: add more jokes if we were very close friends
 
 Conversation:
 {full_chat}

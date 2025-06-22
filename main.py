@@ -1,8 +1,10 @@
 from helpers import *
 import threading
 
-# command: ollama run llama3.2
-# others: py -m install
+# to run a model: ollama run llama3.2
+# or: ollama run deepseek-r1:7b, but also change the model in ollama_api.py
+# others: py -m pip install
+# 
 
 def main():
     print("Ollama welcomes you!")
