@@ -71,15 +71,14 @@ Conversation:
         print("No summary generated.")
 
 def extract_profile_facts_from_chat(full_chat: str, user_id: str):
+    existing_profile = load_static_profile().get(user_id, {})
     prompt = f"""
 You are a memory assistant that extracts long-term identity-related facts about a user.
 
-Your task is to identify facts from the conversation and assign each to a meaningful category.
-Each fact must be stored as a structured key-value pair, using the category as the key.
+1. Your first task is to identify solid facts from the conversation and assign each to a meaningful category. If there's no such category in examples, make a new one.
 
 Only include facts that are:
-- Relevant to the current user's identity (age, location, family, habits, etc.)
-- Clearly stated (no vague or speculative info)
+- Relevant to the current user's perosnality, preferences, relationships, or background
 - Long-term or stable (not temporary emotions or small talk)
 
 ✅ Format:
@@ -90,28 +89,34 @@ Only include facts that are:
 Examples:
 • Age: 35
 • Location: Tel Aviv
-• Hobbies: Gardening, Meditation
 • Food Preferences: Hates peanut butter
 • Family:
     Partner: Stav
     Daughter: Vedana
 • Pets:
     Dogs: Arti, Yuston
-
-Explicitly extract conversation style preferences if mentioned or implied.
-Examples:
-• Conversation Style: Friendly
-• Conversation Style: More formal than casual
-• Conversation Style: add more jokes if we were very close friends
+• Coversation Style preferences: as if we were very close friends, add more jokes
 
 ❌ Do NOT include:
 - User’s name (assumed to be known)
-- Empty fields
-- Freeform summaries
 - Any uncategorized or vague observations
-- Categories from examples if they are not mentioned in the chat
 - facts about any other users
-❌ Do NOT return prose. Use only bullet points in the format above.
+
+Each fact must be stored as a structured key-value pair, using the category as the key.
+One per line. Skip uncertain or vague statements.
+
+2. Merge new identity facts into an existing user profile.
+- Resolve duplicate fields like "Daughter" vs "Children", or Pets inside/outside Family.
+- If a field already exists in the profile and isn't contradicted, keep it.
+- Conversation style - if mentioned, overwrite it.
+
+3. If the user explicitly tells you to forget something, remove it from the profile.
+return is as a new fact with the key "remove" and value in format "Section -> Subsection -> Value".
+
+User ID: {user_id}
+
+Existing profile:
+{json.dumps(existing_profile, indent=2)}
 
 Conversation:
 {full_chat}
@@ -123,9 +128,11 @@ Facts:
     print("\n📌 Extracted profile facts from chat:")
     print(raw_facts_text)
 
-    normalized = normalize_and_merge_facts(user_id, raw_facts_text)
-    print("\n🧽 Normalized JSON to save:")
-    print(json.dumps(normalized, indent=2))
+    updated_facts = {}
+    for line in raw_facts_text.strip().splitlines():
+        if ":" in line:
+            key, value = line.split(":", 1)
+            updated_facts[key.strip()] = value.strip()
 
-    for key, value in normalized.items():
-        update_static_profile(user_id, key, value)
+    if updated_facts:
+        update_static_profile(user_id, updated_facts)  # Now handles batch updates

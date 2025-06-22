@@ -3,6 +3,8 @@ from ollama_api import ask_ollama
 from datetime import datetime, timedelta
 from memory_ranker import rank_memories
 from profile_updater import update_static_profile
+from session_summary import extract_profile_facts_from_chat
+
 
 def promote_summaries_to_facts(user_id):
     summaries = retrieve_memory(user_id, "recent sessions", top_k=20, memory_type="summary")
@@ -25,7 +27,7 @@ Reply only with "yes" or "no"."""
         print(f"🤖 Promoted memory routing: {decision}")
 
         if decision.startswith("yes"):
-            update_static_profile(user_id, content)
+            extract_profile_facts_from_chat(user_id, content)
         else:
             add_memory(user_id, content, memory_type="fact")
             print(f"✅ Promoted to dynamic fact: {content}")

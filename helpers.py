@@ -1,7 +1,7 @@
 import requests
 import json
 from ollama_api import ask_ollama
-from memory_engine import retrieve_memory, add_memory, client
+from memory_engine import retrieve_memory, retrieve_memory_by_type, add_memory, client
 from chat_history import load_history, save_history
 from session_summary import summarize_session
 from promotion_tracker import should_run_promotion, update_promotion_time
@@ -12,8 +12,6 @@ from compression_tracker import should_run_compression, update_compression_time
 from pathlib import Path
 from profile_updater import load_static_profile
 from profile_vector_store import profile_to_description
-from voice_interface import listen_and_transcribe, speak
-
 
 
 PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
@@ -46,14 +44,13 @@ def memory_to_prompt(memory):
 def chat():
     user_id = input("Enter your username: ").strip()
     memory = load_user_memory(user_id)
+    all_profiles = load_static_profile()
     print(f"\n🤖 Welcome, {memory.get('user_name', user_id)}! Type 'exit' to quit.\n")
 
     chat_history = []
 
     while True:
-        print("You (speak)…")
-        user_input = listen_and_transcribe(language="en").strip()
-        print(f"You: {user_input!r}")
+        user_input = input("You: ").strip()
 
         if user_input.lower() in ("exit", "quit"):
             print("\n💬 Chat session ended. Summarizing...")
@@ -84,14 +81,16 @@ def chat():
 
         
         # --- MEMORY RETRIEVAL (current user) ---
-        recent_summary = retrieve_memory(user_id, "previous conversation", top_k=5, memory_type="summary")
-        summary_section = "\n".join([f"[PREVIOUS SESSION] {s}" for s in recent_summary]) if recent_summary else ""
+        all_hits = retrieve_memory_by_type(user_id, user_input, top_k=15)
 
-        compressed_raw = retrieve_memory(user_id, user_input, top_k=5, memory_type="compressed")
-        compressed_chunks = [m["content"] for m in compressed_raw if m.get("score", 0) > 0.75]
+        summary_hits = [m for m in all_hits if m["type"] == "summary"]
+        fact_hits    = [m for m in all_hits if m["type"] == "fact"]
+        compressed_hits = [m for m in all_hits if m["type"] == "compressed"]
 
-        fact_raw = retrieve_memory(user_id, user_input, top_k=5, memory_type="fact")
-        fact_chunks = [m["content"] for m in fact_raw if m.get("score", 0) > 0.95]
+        summary_section = "\n".join([f"[PREVIOUS SESSION] {m['content']}" for m in summary_hits])
+
+        compressed_chunks = [m["content"] for m in compressed_hits if m.get("score", 0) > 0.75]
+        fact_chunks = [m["content"] for m in fact_hits if m.get("score", 0) > 0.95]
 
         memory_chunks = []
         if compressed_chunks:
@@ -128,16 +127,17 @@ def chat():
             for mentioned_user in mentioned_profiles:
                 # 📎 Inject both static and dynamic memory for that user
                 static = profile_to_description(all_profiles[mentioned_user], mentioned_user)
-                summary_mem = retrieve_memory(mentioned_user, user_input, top_k=5, memory_type="summary")
-                fact_mem = retrieve_memory(mentioned_user, user_input, top_k=5, memory_type="fact")
+                all_hits = retrieve_memory(mentioned_user, user_input, top_k=15)
+                summary_hits = [m for m in all_hits if m["type"] == "summary"]
+                fact_hits = [m for m in all_hits if m["type"] == "fact"]
 
                 dynamic = []
-                if summary_mem:
+                if summary_hits:
                     dynamic.append("[SUMMARY MEMORY]")
-                    dynamic.extend([f"• {s['content']}" for s in summary_mem])
-                if fact_mem:
+                    dynamic.extend([f"• {s['content']}" for s in summary_hits])
+                if fact_hits:
                     dynamic.append("[FACT MEMORY]")
-                    dynamic.extend([f"• {f['content']}" for f in fact_mem])
+                    dynamic.extend([f"• {f['content']}" for f in fact_hits])
 
                 other_prompt = (
                     f"You were asked about user {mentioned_user}.\n Pronouns in the next sentences like 'him' or 'her' are likely referring to this user. Use this information to answer accurately. Be concise, honest, and don’t invent anything."
@@ -149,11 +149,10 @@ def chat():
 
                 print(f"📎 Injecting profile for: {mentioned_user}")
                 reply = ask_ollama(other_prompt)
-                print(f"Llama: {reply}")
-                speak(reply)
+                print(f"Lama: {reply}")
                 chat_history.append({"role": "assistant", "content": reply})
                 save_history(user_id, chat_history)
-                print(f"Llama: {reply}\n")
+                print(f"Lama: {reply}\n")
             continue  # Don't continue to general prompt below
         
 
@@ -183,11 +182,8 @@ def chat():
         )
 
         reply = ask_ollama(full_prompt)
-        print(f"Llama: {reply}")
-        speak(reply)
+        print(f"Lama: {reply}")
         chat_history.append({"role": "user", "content": user_input})
-        save_history(user_id, chat_history)
         chat_history.append({"role": "assistant", "content": reply})
         save_history(user_id, chat_history)
-        print(f"Llama: {reply}\n")
 

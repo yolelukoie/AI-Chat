@@ -7,7 +7,7 @@ import threading
 # 
 
 def main():
-    print("Ollama welcomes you!")
+    print("Lama welcomes you!")
     print("You can chat with it, and it will try to respond based on your memory.\n")
     
     chat()
