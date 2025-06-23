@@ -74,7 +74,7 @@ def filter_relevant(chunks, threshold=0.9):
     return result
 
 def chat(user_id: str, user_input: str, memory, all_profiles, instructions) -> str:
-    vector_profile = query_profile_memory(user_id, "who is the user")
+    # vector_profile = query_profile_memory(user_id, "who is the user")
 
     similarity_threshold = 0.93
     user_cache = {}
