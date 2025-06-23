@@ -10,10 +10,16 @@ import webrtcvad
 from gtts import gTTS
 import pygame
 import json
+from pathlib import Path
 from faster_whisper import WhisperModel
 from instructions_store import add_instruction, get_instructions, remove_instruction
 from profile_updater import load_static_profile, save_static_profile
+from helpers import chat
+from promotion_tracker import should_run_promotion, update_promotion_time
+from memory_promoter import promote_summaries_to_facts as run_memory_promotion
+from compression_tracker import should_run_compression, update_compression_time
 
+PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
 
 # Avoid HuggingFace symlink errors on Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -161,10 +167,6 @@ def speak(text: str = "(no reply)"):
     except pygame.error as e:
         print(f"[TTS] Playback error: {e}")
 
-
-def ask_ollama(prompt_text: str) -> str:
-    return ""
-
 def extract_user_switch(text: str) -> str | None:
     # Match: "I'm Yana", "I am Kate", "Hey Lama I'm Stav", etc.
     match = re.search(r"(?:hey\s+lama[, ]*)?\b(?:i[’'`]?m|i am)\s+([a-zA-Z]+)", text, re.IGNORECASE)
@@ -183,10 +185,32 @@ def handle_exit_flow() -> bool:
         speak("Okay, continuing.")
         return False
 
+def detect_mentioned_users(user_id: str, text: str, profiles: dict) -> list[str]:
+    input_lower = text.lower()
+    return [
+        name for name in profiles
+        if name.lower() != user_id.lower() and name.lower() in input_lower
+    ]
+
+def load_all_memory(filename=PROFILE_FILE):
+    try:
+        with open(filename, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def load_user_memory(user_id, filename="PROFILE_FILE"):
+    all_memory = load_all_memory(filename)
+    return all_memory.get(user_id, {})
+
 def main():
 
     global user_id
     user_id = "Yana"
+    memory = load_user_memory(user_id)
+    all_profiles = load_static_profile()
+    instructions = get_instructions(user_id)
+    chat_history = []
 
     INSTRUCTION_TRIGGERS = [
         "instruction", "from now on", "please", "always", "i want you to",
@@ -207,8 +231,7 @@ def main():
             if new_user:
                 user_id = new_user
 
-                profiles = load_static_profile()
-                if user_id in profiles:
+                if user_id in all_profiles:
                     speak(f"Hi {user_id}!")
                 else:
                     speak(f"Hi {user_id}! It looks like we haven't chatted before. Please, tell me something about yourself.")
@@ -222,7 +245,17 @@ def main():
             # === Exit handler ===
             if "exit" in lower_text:
                 if handle_exit_flow():
-                    return
+                    try:
+                        summarize_session(user_id, chat_history)
+                    except Exception as e:
+                        print(f"⚠️ Failed to summarize session: {type(e).__name__}: {e}")
+                    if should_run_compression(user_id):
+                        compress_old_memory(user_id)
+                        update_compression_time(user_id)
+                    if should_run_promotion(user_id):
+                        run_memory_promotion(user_id)
+                        update_promotion_time(user_id)
+                    break
                 else:
                     break
 
@@ -269,16 +302,20 @@ def main():
                 add_instruction(user_id, new_instruction)
                 speak(f"Got it! From now on I will {new_instruction}.")
                 continue
-
+            
+            # === Memory and chat handling ===
+            mentioned = detect_mentioned_users(user_id, text, all_profiles)
+            if mentioned:
+                reply = chat_about_users(user_id, text, mentioned, all_profiles)
+            else:
+                reply = chat(user_id, text, memory, all_profiles, instructions)
 
             # === Normal assistant reply ===
-            reply = ask_ollama(text)
+            chat_history.append({"role": "user", "content": text})
+            chat_history.append({"role": "assistant", "content": reply})
+            save_history(user_id, chat_history)
             print(f"[LLM] {reply}")
             speak(reply)
-
-
-def ask_ollama(prompt):
-    print("it possibly works")
 
 if __name__ == "__main__":
     main()
