@@ -8,29 +8,33 @@ from session_summary import extract_profile_facts_from_chat
 
 def promote_summaries_to_facts(user_id):
     summaries = retrieve_memory(user_id, "recent sessions", top_k=20, memory_type="summary")
-
     reference_text = "user interests, personal events, emotional experiences, daily life"
     top_summaries = rank_memories(summaries, reference_text=reference_text, max_facts=5)
 
-    for item in top_summaries:
-        content = item["content"]
+    summary_list = [item["content"] for item in top_summaries]
+    joined_summaries = "\n\n".join([f"{i+1}. {s}" for i, s in enumerate(summary_list)])
 
-        # Route based on stability of content
-        followup = f"""The following content is a promoted memory from a chat summary:
+    prompt = f"""
+    The following items are memory summaries from previous conversations with a user:
 
-\"{content}\"
+    {joined_summaries}
 
-Is this a stable personal fact that reflects the user's identity, long-term traits, or relationships?
+    Please return a numbered list of items that qualify as **stable personal facts** — things that reflect the user's identity, long-term traits, or relationships.
 
-Reply only with "yes" or "no"."""
-        decision = ask_ollama(followup).strip().lower()
-        print(f"🤖 Promoted memory routing: {decision}")
+    Only include the items that qualify as stable facts, rewriting them in a clean factual form. Reply as a numbered list.
+    """
 
-        if decision.startswith("yes"):
-            extract_profile_facts_from_chat(user_id, content)
-        else:
-            add_memory(user_id, content, memory_type="fact")
-            print(f"✅ Promoted to dynamic fact: {content}")
+    response = ask_ollama(prompt)
+    print("🤖 Promoted facts extracted:\n", response)
+
+    # Extract numbered list items from response
+    lines = response.strip().splitlines()
+    fact_lines = [line for line in lines if line.strip() and line.strip()[0].isdigit()]
+    facts = [line.partition(".")[2].strip() for line in fact_lines if "." in line]
+
+    for fact in facts:
+        add_memory(user_id, fact, memory_type="fact")
+        print(f"✅ Promoted to dynamic fact: {content}")
 
 def run_memory_promotion(user_id):
     promote_summaries_to_facts(user_id)

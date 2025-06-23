@@ -1,10 +1,10 @@
 [
   {
     "role": "user",
-    "content": "Hi! im 35 yo"
+    "content": "whats up Lama? I'm thinking of cooking something interesting with shiitake mushroom, what can you suggest?"
   },
   {
     "role": "assistant",
-    "content": "Hello Yana, nice to see you again! I recall that you mentioned earlier that your age is 35. Is there anything specific on your mind today that you'd like to chat about?"
+    "content": ""
   }
 ]

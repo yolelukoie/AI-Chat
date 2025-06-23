@@ -12,9 +12,15 @@ from compression_tracker import should_run_compression, update_compression_time
 from pathlib import Path
 from profile_updater import load_static_profile
 from profile_vector_store import profile_to_description
+from difflib import SequenceMatcher
+from sentence_transformers import SentenceTransformer, util
 
 
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
+
+# Global in-memory cache
+_memory_cache = {}
 
 # ----- region Memory Management -----
 def load_all_memory(filename=PROFILE_FILE):
@@ -41,6 +47,48 @@ def memory_to_prompt(memory):
     return "\n".join(lines)
 # endregion
 
+def fuzzy_cache_retrieve(user_id: str, user_input: str, top_k=15, similarity_threshold=0.93):
+    """
+    Retrieve memory hits for a given user input, using semantic caching based on cosine similarity.
+    """
+    user_cache = _memory_cache.setdefault(user_id, {
+        "last_input": None,
+        "last_embedding": None,
+        "last_hits": None
+    })
+
+    current_embedding = embedding_model.encode(user_input, convert_to_tensor=True)
+
+    if user_cache["last_embedding"] is not None:
+        similarity = float(util.pytorch_cos_sim(current_embedding, user_cache["last_embedding"])[0])
+        if similarity > similarity_threshold:
+            print(f"[CACHE] Reusing memory for user '{user_id}' (similarity = {similarity:.3f})")
+            return user_cache["last_hits"]
+
+    # If no match, fetch and cache
+    new_hits = retrieve_memory_by_type(user_id, user_input, top_k=top_k)
+    user_cache["last_input"] = user_input
+    user_cache["last_embedding"] = current_embedding
+    user_cache["last_hits"] = new_hits
+    return new_hits
+
+
+def filter_relevant(chunks, threshold=0.9):
+    seen = set()
+    result = []
+    for m in chunks:
+        score = m.get("score", 0)
+        content = m["content"].strip()
+        if score < threshold:
+            continue
+        # Remove near-duplicates
+        key = content.lower().replace(" ", "")[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(content)
+    return result
+
 def chat():
     user_id = input("Enter your username: ").strip()
     memory = load_user_memory(user_id)
@@ -48,6 +96,11 @@ def chat():
     print(f"\n🤖 Welcome, {memory.get('user_name', user_id)}! Type 'exit' to quit.\n")
 
     chat_history = []
+    last_input = None
+    last_embedding = None
+    cached_hits = None
+    similarity_threshold = 0.93  # adjust this to control how similar inputs must be
+    user_cache = {}
 
     while True:
         user_input = input("You: ").strip()
@@ -81,16 +134,15 @@ def chat():
 
         
         # --- MEMORY RETRIEVAL (current user) ---
-        all_hits = retrieve_memory_by_type(user_id, user_input, top_k=15)
+        all_hits = fuzzy_cache_retrieve(user_id, user_input, top_k=15)
 
         summary_hits = [m for m in all_hits if m["type"] == "summary"]
         fact_hits    = [m for m in all_hits if m["type"] == "fact"]
         compressed_hits = [m for m in all_hits if m["type"] == "compressed"]
 
         summary_section = "\n".join([f"[PREVIOUS SESSION] {m['content']}" for m in summary_hits])
-
-        compressed_chunks = [m["content"] for m in compressed_hits if m.get("score", 0) > 0.75]
-        fact_chunks = [m["content"] for m in fact_hits if m.get("score", 0) > 0.95]
+        compressed_chunks = filter_relevant(compressed_hits, threshold=0.85)
+        fact_chunks = filter_relevant(fact_hits, threshold=0.95)
 
         memory_chunks = []
         if compressed_chunks:
@@ -99,6 +151,10 @@ def chat():
         if fact_chunks:
             memory_chunks.append("[DETAILED MEMORY]")
             memory_chunks.extend([f"• {chunk}" for chunk in fact_chunks])
+        
+        max_chunks = 100 # adjust as the memory grows
+        all_chunks = compressed_chunks + fact_chunks
+        all_chunks = all_chunks[:max_chunks]
 
         retrieved_text = summary_section + "\n\n" + "\n".join(memory_chunks)
         use_static_profile = not memory_chunks and not summary_section
@@ -127,7 +183,9 @@ def chat():
             for mentioned_user in mentioned_profiles:
                 # 📎 Inject both static and dynamic memory for that user
                 static = profile_to_description(all_profiles[mentioned_user], mentioned_user)
-                all_hits = retrieve_memory(mentioned_user, user_input, top_k=15)
+                
+                # all_hits = retrieve_memory(mentioned_user, user_input, top_k=15)
+                all_hits = fuzzy_cache_retrieve(mentioned_user, user_input, top_k=15)
                 summary_hits = [m for m in all_hits if m["type"] == "summary"]
                 fact_hits = [m for m in all_hits if m["type"] == "fact"]
 
