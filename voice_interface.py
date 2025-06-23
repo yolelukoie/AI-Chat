@@ -236,7 +236,7 @@ def main():
                 else:
                     speak(f"Hi {user_id}! It looks like we haven't chatted before. Please, tell me something about yourself.")
                     save_static_profile(user_id, {"user_name": user_id})  # minimally bootstrap
-                continue  # skip regular LLM handling for now
+                continue 
 
 
             print(f"[User] {text}")
@@ -302,7 +302,7 @@ def main():
                 add_instruction(user_id, new_instruction)
                 speak(f"Got it! From now on I will {new_instruction}.")
                 continue
-            
+             
             # === Memory and chat handling ===
             mentioned = detect_mentioned_users(user_id, text, all_profiles)
             if mentioned:
