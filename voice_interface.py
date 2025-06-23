@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import sys
 import time
 import numpy as np
@@ -8,7 +9,11 @@ import soundfile as sf
 import webrtcvad
 from gtts import gTTS
 import pygame
+import json
 from faster_whisper import WhisperModel
+from instructions_store import add_instruction, get_instructions, remove_instruction
+from profile_updater import load_static_profile, save_static_profile
+
 
 # Avoid HuggingFace symlink errors on Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -160,6 +165,12 @@ def speak(text: str = "(no reply)"):
 def ask_ollama(prompt_text: str) -> str:
     return ""
 
+def extract_user_switch(text: str) -> str | None:
+    # Match: "I'm Yana", "I am Kate", "Hey Lama I'm Stav", etc.
+    match = re.search(r"(?:hey\s+lama[, ]*)?\b(?:i[’'`]?m|i am)\s+([a-zA-Z]+)", text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().capitalize()
+    return None
 
 def handle_exit_flow() -> bool:
     speak("Are you sure you want to exit? Say 'yes' or 'no'.")
@@ -172,8 +183,16 @@ def handle_exit_flow() -> bool:
         speak("Okay, continuing.")
         return False
 
-
 def main():
+
+    global user_id
+    user_id = "Yana"
+
+    INSTRUCTION_TRIGGERS = [
+        "instruction", "from now on", "please", "always", "i want you to",
+        "don't", "never", "stop", "no longer"
+    ]
+
     while True:
         listen_for_hotword()
         speak("Hello! I'm listening.")
@@ -184,17 +203,82 @@ def main():
             if not text:
                 continue
 
+            new_user = extract_user_switch(text)
+            if new_user:
+                user_id = new_user
+
+                profiles = load_static_profile()
+                if user_id in profiles:
+                    speak(f"Hi {user_id}!")
+                else:
+                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Please, tell me something about yourself.")
+                    save_static_profile(user_id, {"user_name": user_id})  # minimally bootstrap
+                continue  # skip regular LLM handling for now
+
+
             print(f"[User] {text}")
-            if "exit" in text.lower():
+            lower_text = text.lower()
+
+            # === Exit handler ===
+            if "exit" in lower_text:
                 if handle_exit_flow():
                     return
                 else:
                     break
 
+            # === Instruction handler ===
+            if any(k in lower_text for k in INSTRUCTION_TRIGGERS):
+                prompt = f"""
+                You're an instruction parser for an AI assistant.
+
+                1. Extract any persistent instruction the user is giving to the assistant.
+                2. Check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
+                3. If so, return both the new instruction and the one to remove.
+
+                Return a **JSON list**:
+                - [new_instruction] → if only adding
+                - [new_instruction, instruction_to_remove] → if replacing
+
+                If there's no instruction, return [].
+
+                User said: "{text}"
+                """
+                raw_response = ask_ollama(prompt).strip()
+                print(f"[Instruction Raw Response] {raw_response}")
+
+                try:
+                    parsed = json.loads(raw_response)
+                except json.JSONDecodeError:
+                    print("❌ Failed to parse instruction response.")
+                    speak("I didn’t understand that instruction. Could you say it again?")
+                    continue
+
+                if not parsed:
+                    print("🫥 No instruction extracted.")
+                    continue
+
+                new_instruction = parsed[0]
+                instruction_to_remove = parsed[1] if len(parsed) > 1 else None
+
+                # Remove conflicting instruction first
+                if instruction_to_remove:
+                    removed = remove_instruction(user_id, instruction_to_remove)
+                    print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
+
+                # Add new instruction
+                add_instruction(user_id, new_instruction)
+                speak(f"Got it! From now on I will {new_instruction}.")
+                continue
+
+
+            # === Normal assistant reply ===
             reply = ask_ollama(text)
             print(f"[LLM] {reply}")
             speak(reply)
 
+
+def ask_ollama(prompt):
+    print("it possible works")
 
 if __name__ == "__main__":
     main()
