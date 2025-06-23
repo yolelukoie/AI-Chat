@@ -278,7 +278,7 @@ def main():
 
 
 def ask_ollama(prompt):
-    print("it possible works")
+    print("it possibly works")
 
 if __name__ == "__main__":
     main()
