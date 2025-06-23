@@ -14,10 +14,14 @@ from pathlib import Path
 from faster_whisper import WhisperModel
 from instructions_store import add_instruction, get_instructions, remove_instruction
 from profile_updater import load_static_profile, save_static_profile
-from helpers import chat
 from promotion_tracker import should_run_promotion, update_promotion_time
 from memory_promoter import promote_summaries_to_facts as run_memory_promotion
 from compression_tracker import should_run_compression, update_compression_time
+from chat_history import save_chat_history as save_history
+from session_summary import summarize_session 
+from memory_promoter import compress_old_memory
+from ollama_api import ask_ollama
+from helpers import chat, chat_about_users, retrieve_memory, retrieve_memory_by_type, client
 
 PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
 
