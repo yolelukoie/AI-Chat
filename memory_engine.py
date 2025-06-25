@@ -13,7 +13,7 @@ MEMORY_SUMMARY = "summary"
 MEMORY_COMPRESSED = "compressed"
 
 # Load embedding model
-embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+embedding_model = SentenceTransformer("D:/AI Chat/paraphrase-multilingual-MiniLM-L12-v2")
 
 def embed(texts):
     return embedding_model.encode(texts).tolist()

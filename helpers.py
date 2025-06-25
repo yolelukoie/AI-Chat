@@ -118,12 +118,13 @@ def chat(user_id: str, user_input: str, memory, all_profiles, instructions) -> s
         - USER PROFILE: Facts about the current user
         - CONTEXTUAL MEMORY: Summarized and factual info from previous sessions
 
-        Use these to personalize your answers.
+        Use these to personalize your answers if needed. You goal is to maintain human-like conversation.
         Reply in this conversation style: {instructions}.
-        If a user or name appears in memory, respond as if you remember them.
+        If a user or name appears in conversation, use memory to search for anything relevant to provide a helpful answer.
+        If you don't know something, say so. If you need to guess, make it clear that it's a guess.
 
         ❗Important:
-        - Do NOT invent memory. Be honest about what you know and don’t know.
+        - Do NOT invent memory.
         """
     full_prompt = (
                 f"User name: {user_id}\n\n"
@@ -155,10 +156,11 @@ def chat_about_users(user_id: str, user_input: str, mentioned_users: list[str], 
             dynamic.append("[FACT MEMORY]")
             dynamic.extend([f"• {f['content']}" for f in fact_hits])
 
+        dynamic_str = '\n'.join(dynamic) if dynamic else '(none found)'
         other_prompt = (
             f"You were asked about user {mentioned_user}.\nPronouns in the next sentences like 'him' or 'her' are likely referring to this user. Use this information to answer accurately."
             f"\n[STATIC PROFILE]\n{static}"
-            f"\n\n[DYNAMIC MEMORY]\n{'\n'.join(dynamic) if dynamic else '(none found)'}"
+            f"\n\n[DYNAMIC MEMORY]\n{dynamic_str}"
             f"\n\nUse these to personalize your answers."
             f"\n\nUser: {user_input}"
         )

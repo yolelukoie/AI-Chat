@@ -1,15 +1,14 @@
 import io
 import os
 import re
-import sys
 import time
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import webrtcvad
-from gtts import gTTS
 import pygame
 import json
+import uuid
 from pathlib import Path
 from faster_whisper import WhisperModel
 from instructions_store import add_instruction, get_instructions, remove_instruction
@@ -17,11 +16,18 @@ from profile_updater import load_static_profile, save_static_profile
 from promotion_tracker import should_run_promotion, update_promotion_time
 from memory_promoter import promote_summaries_to_facts as run_memory_promotion
 from compression_tracker import should_run_compression, update_compression_time
-from chat_history import save_chat_history as save_history
+from chat_history import save_history
 from session_summary import summarize_session 
 from memory_promoter import compress_old_memory
 from ollama_api import ask_ollama
-from helpers import chat, chat_about_users, retrieve_memory, retrieve_memory_by_type, client
+from helpers import chat, chat_about_users
+from vosk import Model, KaldiRecognizer
+from threading import Thread
+from queue import Queue
+from TTS.api import TTS
+import sys
+import librosa
+from collections import deque
 
 PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
 
@@ -32,6 +38,15 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 # Initialize Whisper model
 whisper_model = WhisperModel("base", compute_type="auto")
 
+# Initialize TTS model
+tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
+"""
+tts_models/en/ljspeech/tacotron2-DDC	Female (LJ Speech)	Clear, high-quality single-speaker
+tts_models/en/vctk/vits	Multi-speaker (VCTK)	~100 voices – British, American, global
+tts_models/en/multi-dataset/tortoise-v2	Expressive	Slow but highly natural, creative tone
+tts_models/en/jenny/jenny	AI assistant style	Fast and very natural, female
+"""
+
 # Audio settings
 FS = 16000
 FRAME_DURATION_MS = 30
@@ -39,9 +54,39 @@ FRAME_SIZE = int(FS * FRAME_DURATION_MS / 1000)
 VAD_AGGRESSIVENESS = 1
 HOTWORD_CHUNK_SECONDS = 2
 
+# Initialize Vosk model
+vosk_model = Model("models/vosk-model-small-en-us-0.15")
+vosk_rec = KaldiRecognizer(vosk_model, FS)
+vosk_rec.SetWords(False)
+
 # Initialize VAD and audio playback
 vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
 pygame.mixer.init(frequency=FS)
+
+interrupt_audio_queue = Queue()
+
+# region Rolling stats for audio analysis
+class RollingStats:
+    def __init__(self, maxlen=30):
+        self.values = deque(maxlen=maxlen)
+
+    def add(self, value):
+        self.values.append(value)
+
+    def mean(self):
+        return np.mean(self.values) if self.values else 0
+
+    def std(self):
+        return np.std(self.values) if self.values else 0
+
+    def last(self):
+        return self.values[-1] if self.values else 0
+        
+rolling_amp = RollingStats()
+rolling_band = RollingStats()
+rolling_noise = RollingStats()
+
+# endregion
 
 
 def transcribe_local(wav_io: io.BytesIO) -> str:
@@ -54,31 +99,94 @@ def transcribe_local(wav_io: io.BytesIO) -> str:
         return " ".join([seg.text.strip() for seg in segments])
 
 
-def listen_for_hotword(hotword: str = "lama"):
-    print("[hotword] Listening for hotword...", flush=True)
-    while True:
-        audio_chunk = sd.rec(
-            int(HOTWORD_CHUNK_SECONDS * FS), samplerate=FS, channels=1, dtype='int16'
-        )
+def listen_for_hotword(hotword: str = "lama") -> io.BytesIO | None:
+    print("[hotword] Listening for hotword...")
+
+    with sd.RawInputStream(samplerate=FS, blocksize=FRAME_SIZE, dtype='int16', channels=1) as stream:
+        rec = KaldiRecognizer(vosk_model, FS)
+        rec.SetWords(True)
+
+        frames = []
+        hotword_detected = False
+        silence_counter = 0
+
+        while True:
+            data, _ = stream.read(FRAME_SIZE)
+            frame_bytes = bytes(data)
+            frames.append(frame_bytes)
+
+            if rec.AcceptWaveform(frame_bytes):
+                result = json.loads(rec.Result())
+                text = result.get("text", "").lower()
+                print(f"[hotword] Final: {text}")
+                if hotword in text:
+                    print(f"[hotword] Detected '{hotword}' in full result")
+                    hotword_detected = True
+                    break
+            else:
+                partial = json.loads(rec.PartialResult()).get("partial", "")
+                if hotword in partial.lower():
+                    print(f"[hotword] Partial match: {partial}")
+                    hotword_detected = True
+                    break
+
+        if not hotword_detected:
+            return None
+
+        # Record extra 3 seconds of audio for intent
+        post_hotword = sd.rec(int(FS * 3), samplerate=FS, channels=1, dtype='int16')
         sd.wait()
+        frames.append(post_hotword.tobytes())
 
-        wav_io = io.BytesIO()
-        sf.write(wav_io, audio_chunk, FS, format='WAV', subtype='PCM_16')
-        wav_io.seek(0)
-        wav_io.name = "hotword.wav"
+    # Combine and convert to BytesIO
+    full_audio = b''.join(frames)
+    wav_io = io.BytesIO()
+    sf.write(wav_io, np.frombuffer(full_audio, dtype='int16'), FS, format='WAV', subtype='PCM_16')
+    wav_io.seek(0)
+    wav_io.name = "intent.wav"
+    return wav_io
 
-        try:
-            text = transcribe_local(wav_io).lower()
-            print(f"[hotword] Transcribed: {text}")
-            if hotword in text:
-                print(f"[hotword] Detected '{hotword}'", flush=True)
-                return
-        except Exception as e:
-            print(f"[hotword] Local ASR error: {e}", flush=True)
+def stream_until_silence(timeout=6.0) -> str:
+    print("[Whisper] Listening for full utterance...")
 
-        time.sleep(0.1)
+    buffer = []
+    transcript_parts = []
+    start_time = time.time()
+    last_voice_time = time.time()
 
+    with sd.RawInputStream(samplerate=FS, blocksize=FRAME_SIZE, dtype='int16', channels=1) as stream:
+        while True:
+            frame, _ = stream.read(FRAME_SIZE)
+            buffer.append(frame)
+            frame_bytes = bytes(frame)
 
+            # VAD check
+            if vad.is_speech(frame_bytes, FS):
+                last_voice_time = time.time()
+
+            # Check for silence
+            if time.time() - last_voice_time > 1.5:
+                print("[Whisper] Detected end of speech.")
+                break
+
+            # Optional timeout
+            if time.time() - start_time > timeout:
+                print("[Whisper] Timeout.")
+                break
+
+    # Save buffered audio as WAV
+    full_audio = b''.join(buffer)
+    wav_io = io.BytesIO()
+    sf.write(wav_io, np.frombuffer(full_audio, dtype='int16'), FS, format='WAV', subtype='PCM_16')
+    wav_io.seek(0)
+
+    # Transcribe once with Whisper
+    segments, _ = whisper_model.transcribe(wav_io, language="en")
+    transcript = " ".join([seg.text.strip() for seg in segments])
+    print(f"[Whisper] Final transcript: {transcript}")
+    return transcript
+
+"""
 def record_until_silence() -> io.BytesIO:
     buffer = []
     speech_started = False
@@ -93,10 +201,17 @@ def record_until_silence() -> io.BytesIO:
             frame, _ = stream.read(FRAME_SIZE)
             frame_np = np.frombuffer(frame, dtype='int16')
             frame_bytes = frame_np.tobytes()
+
             is_speech = vad.is_speech(frame_bytes, FS)
+            filtered = is_speech and is_real_speech(frame_np)
+            if is_speech and not filtered:
+                print("[FILTER] VAD triggered, but rejected by is_real_speech()")
+            
+            if filtered and not speech_started:
+                print("✅ Real speech detected — starting capture")
 
             if not speech_started:
-                if is_speech:
+                if filtered:
                     speech_frames += 1
                 else:
                     speech_frames = 0
@@ -105,7 +220,7 @@ def record_until_silence() -> io.BytesIO:
                     print("[VAD] Speech started")
             else:
                 buffer.append(frame_np)
-                if is_speech:
+                if filtered:
                     silence_frames = 0
                 else:
                     silence_frames += 1
@@ -119,9 +234,82 @@ def record_until_silence() -> io.BytesIO:
     wav_io.seek(0)
     wav_io.name = "speech.wav"
     return wav_io
+"""
+# region User interrupt detection
+def detect_user_interrupt(similarity_threshold=0.80) -> bool:
+    if interrupt_audio_queue.empty():
+        return False
 
+    user_audio = interrupt_audio_queue.get()
+    user_audio = user_audio.flatten().astype(np.float32) / 32768.0
+
+    try:
+        # Load last TTS audio (if you saved it)
+        tts_audio, _ = sf.read("last_tts.wav")
+        user_mfcc = librosa.feature.mfcc(y=user_audio, sr=FS, n_mfcc=13)
+        tts_mfcc = librosa.feature.mfcc(y=tts_audio, sr=FS, n_mfcc=13)
+
+        # Average across time, then compare
+        sim = cosine_similarity(user_mfcc.mean(axis=1), tts_mfcc.mean(axis=1))
+        print(f"[DIAR] Cosine similarity = {sim:.2f}")
+
+        return sim < similarity_threshold
+    except Exception as e:
+        print(f"[DIAR] Error comparing voices: {e}")
+        return False
+
+
+def cosine_similarity(vec1, vec2):
+    a = np.dot(vec1, vec2)
+    b = np.linalg.norm(vec1) * np.linalg.norm(vec2)
+    return a / b if b != 0 else 0
 
 def detect_interrupting_speech() -> bool:
+    duration_samples = int(0.4 * FS)
+    audio = sd.rec(duration_samples, samplerate=FS, channels=1, dtype='int16')
+    sd.wait()
+    audio_np = audio[:, 0] if audio.ndim > 1 else audio
+    audio_np = audio_np * np.hamming(len(audio_np))
+
+    max_amp = np.max(np.abs(audio_np))
+    freqs = np.fft.rfft(audio_np)
+    freqs_power = np.abs(freqs)
+    speech_band = np.sum(freqs_power[100:300])
+    low_noise = np.sum(freqs_power[10:80])
+
+    # Update rolling stats
+    rolling_amp.add(max_amp)
+    rolling_band.add(speech_band)
+    rolling_noise.add(low_noise)
+
+    print(f"[VAD] Amp={max_amp}, SpeechBand={speech_band:.0f}, Hum={low_noise:.0f}")
+    print(f"[ROLLING] Amp µ={rolling_amp.mean():.0f}, Speech µ={rolling_band.mean():.0f}, Noise µ={rolling_noise.mean():.0f}")
+
+    # Dynamic thresholds (tuned as needed)
+    amp_threshold = rolling_amp.mean() + 2 * rolling_amp.std()
+    band_threshold = rolling_band.mean() + 1.5 * rolling_band.std()
+
+    # Adaptive logic
+    if max_amp < amp_threshold:
+        print("[VAD] ❌ Rejected: Amplitude too low")
+        return False
+    if speech_band < band_threshold:
+        print("[VAD] ❌ Rejected: Not enough speech band energy")
+        return False
+    if speech_band < 3 * low_noise:
+        print("[VAD] ❌ Rejected: Too much background hum")
+        return False
+
+    print("🛑 Real speech detected — interrupting.")
+    return True
+
+# endregion
+
+"""
+def detect_interrupting_speech() -> bool:
+    
+    # Returns True only if real speech characteristics are detected in a short recording.
+    # Uses both amplitude and frequency band checks.
     duration_samples = int(0.4 * FS)
     audio = sd.rec(duration_samples, samplerate=FS, channels=1, dtype='int16')
     sd.wait()
@@ -132,10 +320,11 @@ def detect_interrupting_speech() -> bool:
         print(f"[VAD] Ignored quiet background (amp={max_amp})")
         return False
 
+    # Apply FFT for frequency band analysis
     freqs = np.fft.rfft(audio_np * np.hamming(len(audio_np)))
     freqs_power = np.abs(freqs)
-    speech_band_power = np.sum(freqs_power[100:300])
-    low_freq_noise = np.sum(freqs_power[10:80])
+    speech_band_power = np.sum(freqs_power[100:300])  # Roughly 800–2400 Hz
+    low_freq_noise = np.sum(freqs_power[10:80])       # Hum and background
 
     print(f"[VAD] Amp={max_amp}, SpeechBand={speech_band_power:.0f}, Hum={low_freq_noise:.0f}")
 
@@ -143,34 +332,101 @@ def detect_interrupting_speech() -> bool:
         print("[VAD] Frequency pattern not matching speech — ignored")
         return False
 
+    print("🛑 Real speech detected — interrupting.")
+    return True
+    """
+
+# region Confidence scoring for input
+def should_process_text(text: str) -> bool:
+    if not text:
+        print("[Confidence] ❌ Empty.")
+        return False
+    
+    special_intents = {"stop", "wait", "exit", "repeat", "continue"}
+    if text in special_intents:
+        print(f"[Confidence] ⚠️ Command word detected: {text}")
+        return True
+
+    if len(text.split()) < 2:
+        print("[Confidence] ⚠️ Only one word — might be junk.")
+        # Pass to LLM check
+        return check_with_llm(text)
+    
     return True
 
+def check_with_llm(text: str) -> bool:
+    prompt = f"""A user said: "{text}"
 
-def speak(text: str = "(no reply)"):
+Is this a real question or answer or command that an AI assistant should respond to?
+
+Reply only with YES or NO."""
+    try:
+        reply = ask_ollama(prompt).strip().upper()
+        print(f"[LLM-Check] LLM replied:Is it a meaningful input? - {reply}")
+        return "YES" in reply
+    except Exception as e:
+        print(f"[LLM-Check Error] {e}")
+        return False
+
+# endregion
+
+# region Speaking
+def clean_text_for_tts(text: str) -> str:
+    # Remove emojis and characters not in TTS vocabulary
+    return re.sub(r"[^\x00-\x7F]+", "", text)
+
+def buffer_mic_during_speak(duration=0.4):
+    while pygame.mixer.music.get_busy():
+        audio = sd.rec(int(FS * duration), samplerate=FS, channels=1, dtype='int16')
+        sd.wait()
+        interrupt_audio_queue.put(audio)
+
+def speak(text: str):
+    text = clean_text_for_tts(text.strip())
     if not text.strip():
         print("[TTS] Warning: empty reply, skipping speech.")
         return
+
     print(f"[TTS] Speaking: {text}")
-    tts = gTTS(text=text, lang="en")
-    mp3_io = io.BytesIO()
-    tts.write_to_fp(mp3_io)
-    mp3_io.seek(0)
+    audio = tts_model.tts(text)
 
-    try:
-        pygame.mixer.music.load(mp3_io, 'mp3')
-        pygame.mixer.music.play()
-        start_time = time.time()
-        while pygame.mixer.music.get_busy():
-            if time.time() - start_time < 1.0:
-                time.sleep(0.1)
-                continue
-            if detect_interrupting_speech():
+    # Normalize and save to WAV for diarization
+    audio_np = np.array(audio).astype(np.float32)
+    sf.write("last_tts.wav", audio_np, FS)
+
+    # Save to temp playable file for pygame
+    temp_filename = f"tts_output_{uuid.uuid4().hex[:8]}.wav"
+    sf.write(temp_filename, audio_np, FS, format="WAV")
+    
+    # Initialize Pygame if not already
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(frequency=FS)
+
+    pygame.mixer.music.load(temp_filename)
+    pygame.mixer.music.play()
+
+    # Start mic buffering in parallel
+    Thread(target=buffer_mic_during_speak, daemon=True).start()
+
+    start_time = time.time()
+
+    while pygame.mixer.music.get_busy():
+        elapsed = time.time() - start_time
+        if elapsed < 1.0:
+            time.sleep(0.1)
+            continue
+
+        # Check for user interrupt
+        if detect_interrupting_speech():
+            if detect_user_interrupt():
                 pygame.mixer.music.stop()
-                print("[TTS] Interrupted by user speech")
-                break
-    except pygame.error as e:
-        print(f"[TTS] Playback error: {e}")
+                print("[TTS] 🔇 Interrupted by user speech")
+                return
 
+        time.sleep(0.05)
+# endregion
+
+# region Command hotwords detection
 def extract_user_switch(text: str) -> str | None:
     # Match: "I'm Yana", "I am Kate", "Hey Lama I'm Stav", etc.
     match = re.search(r"(?:hey\s+lama[, ]*)?\b(?:i[’'`]?m|i am)\s+([a-zA-Z]+)", text, re.IGNORECASE)
@@ -180,7 +436,7 @@ def extract_user_switch(text: str) -> str | None:
 
 def handle_exit_flow() -> bool:
     speak("Are you sure you want to exit? Say 'yes' or 'no'.")
-    wav_io = record_until_silence()
+    wav_io = stream_until_silence()
     answer = transcribe_local(wav_io).strip().lower()
     if "yes" in answer:
         speak("Goodbye!")
@@ -195,7 +451,9 @@ def detect_mentioned_users(user_id: str, text: str, profiles: dict) -> list[str]
         name for name in profiles
         if name.lower() != user_id.lower() and name.lower() in input_lower
     ]
+# endregion
 
+# region Memory management
 def load_all_memory(filename=PROFILE_FILE):
     try:
         with open(filename, "r") as f:
@@ -206,10 +464,10 @@ def load_all_memory(filename=PROFILE_FILE):
 def load_user_memory(user_id, filename="PROFILE_FILE"):
     all_memory = load_all_memory(filename)
     return all_memory.get(user_id, {})
+# endregion
 
 def main():
-
-    global user_id
+    global user_id, calibration_done, calibration
     user_id = "Yana"
     memory = load_user_memory(user_id)
     all_profiles = load_static_profile()
@@ -222,31 +480,55 @@ def main():
     ]
 
     while True:
-        listen_for_hotword()
-        speak("Hello! I'm listening.")
+        hotword_audio = listen_for_hotword(hotword="lama")
+        if not hotword_audio:
+            continue
 
+        # Transcribe the hotword-triggered input
+        hotword_text = transcribe_local(hotword_audio).strip()
+
+        # === Remove excessive repetition
+        sentences = re.split(r'[.?!]', hotword_text)
+        unique = []
+        for s in sentences:
+            s = s.strip()
+            if s and s not in unique:
+                unique.append(s)
+        if len(unique) < len(sentences):
+            print("[User Text] Repetition detected — cleaned.")
+            hotword_text = ". ".join(unique)
+
+        if not hotword_text or hotword_text.lower() == "lama":
+            speak("Hey! I'm listening.")
+            time.sleep(1.0)  # Let the user prepare to speak
+            user_text = stream_until_silence().strip()
+        else:
+            user_text = hotword_text
+
+        # === Session Loop ===
         while True:
-            wav_io = record_until_silence()
-            text = transcribe_local(wav_io).strip()
-            if not text:
-                continue
+            if not user_text:
+                user_text = stream_until_silence().strip()
+                if not should_process_text(user_text):
+                    print("[Main] Skipping junk or background noise.")
+                    continue
 
-            new_user = extract_user_switch(text)
+
+            print(f"[User] {user_text}")
+            lower_text = user_text.lower()
+
+            # === User switch
+            new_user = extract_user_switch(user_text)
             if new_user:
                 user_id = new_user
-
                 if user_id in all_profiles:
                     speak(f"Hi {user_id}!")
                 else:
                     speak(f"Hi {user_id}! It looks like we haven't chatted before. Please, tell me something about yourself.")
-                    save_static_profile(user_id, {"user_name": user_id})  # minimally bootstrap
-                continue 
+                    save_static_profile(user_id, {"user_name": user_id})
+                break
 
-
-            print(f"[User] {text}")
-            lower_text = text.lower()
-
-            # === Exit handler ===
+            # === Exit
             if "exit" in lower_text:
                 if handle_exit_flow():
                     try:
@@ -259,11 +541,12 @@ def main():
                     if should_run_promotion(user_id):
                         run_memory_promotion(user_id)
                         update_promotion_time(user_id)
+                    calibration_done = False
                     break
                 else:
                     break
 
-            # === Instruction handler ===
+            # === Instructions
             if any(k in lower_text for k in INSTRUCTION_TRIGGERS):
                 prompt = f"""
                 You're an instruction parser for an AI assistant.
@@ -278,48 +561,41 @@ def main():
 
                 If there's no instruction, return [].
 
-                User said: "{text}"
+                User said: "{user_text}"
                 """
                 raw_response = ask_ollama(prompt).strip()
                 print(f"[Instruction Raw Response] {raw_response}")
-
                 try:
                     parsed = json.loads(raw_response)
+                    if parsed:
+                        new_instruction = parsed[0]
+                        instruction_to_remove = parsed[1] if len(parsed) > 1 else None
+                        if instruction_to_remove:
+                            removed = remove_instruction(user_id, instruction_to_remove)
+                            print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
+                        add_instruction(user_id, new_instruction)
+                        speak(f"Got it! From now on I will {new_instruction}.")
                 except json.JSONDecodeError:
                     print("❌ Failed to parse instruction response.")
                     speak("I didn’t understand that instruction. Could you say it again?")
-                    continue
-
-                if not parsed:
-                    print("🫥 No instruction extracted.")
-                    continue
-
-                new_instruction = parsed[0]
-                instruction_to_remove = parsed[1] if len(parsed) > 1 else None
-
-                # Remove conflicting instruction first
-                if instruction_to_remove:
-                    removed = remove_instruction(user_id, instruction_to_remove)
-                    print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
-
-                # Add new instruction
-                add_instruction(user_id, new_instruction)
-                speak(f"Got it! From now on I will {new_instruction}.")
+                user_text = ""
                 continue
-             
-            # === Memory and chat handling ===
-            mentioned = detect_mentioned_users(user_id, text, all_profiles)
-            if mentioned:
-                reply = chat_about_users(user_id, text, mentioned, all_profiles)
-            else:
-                reply = chat(user_id, text, memory, all_profiles, instructions)
 
-            # === Normal assistant reply ===
-            chat_history.append({"role": "user", "content": text})
+            # === Normal conversation
+            mentioned = detect_mentioned_users(user_id, user_text, all_profiles)
+            if mentioned:
+                reply = chat_about_users(user_id, user_text, mentioned, all_profiles)
+            else:
+                reply = chat(user_id, user_text, memory, all_profiles, instructions)
+
+            chat_history.append({"role": "user", "content": user_text})
             chat_history.append({"role": "assistant", "content": reply})
             save_history(user_id, chat_history)
-            print(f"[LLM] {reply}")
             speak(reply)
+
+            # Reset for next loop
+            user_text = ""
+
 
 if __name__ == "__main__":
     main()

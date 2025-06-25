@@ -17,7 +17,6 @@ def ask_ollama(prompt, model="deepseek-r1:7b"):
             print(token, end="", flush=True)
             collected += token
 
-    print("[DEBUG] Raw response:", collected)
     return clean_deepseek_response(collected)
    
 def clean_deepseek_response(text: str) -> str:

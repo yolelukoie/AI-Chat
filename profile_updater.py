@@ -93,6 +93,6 @@ def update_static_profile(user_id: str, facts_dict: dict):
 
     if updated:
         profile[user_id] = user_profile
-        save_static_profile(profile)
+        save_static_profile(user_profile)
         update_profile_vector(user_profile, user_id)
 
