@@ -5,8 +5,6 @@ from memory_engine import embed
 from pathlib import Path
 from ollama_api import ask_ollama
 
-
-PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
 CHROMA_PATH = "chroma_store"
 PROFILE_COLLECTION = "profile_vectors"
 
@@ -45,12 +43,27 @@ def update_profile_vector(user_profile: dict, user_id: str):
     print(f"✅ Updated profile vector for {user_id}.")
 
 def query_profile_memory(user_id: str, query: str, top_k=3):
+    if query == "__FULL__":
+        results = collection.query(where={"user": user_id}, n_results=100)
+        return "\n".join(results["documents"][0]) if results["documents"] else ""
+
     embedding = embed(query)
-
-    results = collection.query(
-        query_embeddings=[embedding],
-        where={"user": user_id},
-        n_results=top_k
-    )
-
+    results = collection.query(query_embeddings=[embedding], where={"user": user_id}, n_results=top_k)
     return results['documents'][0] if results['documents'] else []
+
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+def load_all_vector_profiles():
+    # Get all user documents
+    results = collection.get(include=["documents", "metadatas"])
+    
+    profiles = {}
+    for doc, meta in zip(results["documents"], results["metadatas"]):
+        user = meta.get("user")
+        if user:
+            if user not in profiles:
+                profiles[user] = []
+            profiles[user].append(doc)
+
+    # Combine each user's document chunks
+    return {user: "\n".join(chunks) for user, chunks in profiles.items()}

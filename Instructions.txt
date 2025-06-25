@@ -1,4 +1,4 @@
 1. "Lama" to start the chat
-2. "I'm ..." / "Hey Lama, I'm ..."  - introduce yourself to switch between users
+2. "My name is..."  - introduce yourself to switch between users
 3. "Exit" to finish th session
 4. "Instructions" to initialise / edit Instructions

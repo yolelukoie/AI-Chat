@@ -1,7 +1,6 @@
+import json
 from ollama_api import ask_ollama
 from memory_engine import add_memory
-from profile_updater import update_static_profile
-import json
 from profile_vector_store import update_profile_vector
 
 def summarize_session(user_id, chat_history):
@@ -30,10 +29,6 @@ Conversation:
         print(summary)
     else:
         print("No summary generated.")
-
-from ollama_api import ask_ollama
-from profile_vector_store import update_profile_vector
-import json
 
 def extract_profile_facts_from_chat(full_chat: str, user_id: str):
     prompt = (

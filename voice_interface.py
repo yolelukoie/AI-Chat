@@ -12,7 +12,6 @@ import uuid
 from pathlib import Path
 from faster_whisper import WhisperModel
 from instructions_store import add_instruction, get_instructions, remove_instruction
-from profile_updater import load_static_profile, save_static_profile
 from promotion_tracker import should_run_promotion, update_promotion_time
 from memory_promoter import promote_summaries_to_facts as run_memory_promotion
 from compression_tracker import should_run_compression, update_compression_time
@@ -28,8 +27,7 @@ from TTS.api import TTS
 import sys
 import librosa
 from collections import deque
-
-PROFILE_FILE = str(Path(__file__).resolve().parent / "memory.json")
+from profile_vector_store import query_profile_memory, update_profile_vector, load_all_profile_vectors
 
 # Avoid HuggingFace symlink errors on Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -88,6 +86,7 @@ rolling_noise = RollingStats()
 
 # endregion
 
+# region Audio transcription and hotword detection
 def transcribe_local(wav_io: io.BytesIO) -> str:
     wav_io.seek(0)
     with sf.SoundFile(wav_io) as audio_file:
@@ -184,6 +183,7 @@ def stream_until_silence(timeout=6.0) -> str:
     transcript = " ".join([seg.text.strip() for seg in segments])
     print(f"[Whisper] Final transcript: {transcript}")
     return transcript
+# endregion
 
 # region User interrupt detection
 def detect_user_interrupt(similarity_threshold=0.80) -> bool:
@@ -256,6 +256,7 @@ def detect_interrupting_speech() -> bool:
 # endregion
 
 # region Confidence scoring for input
+
 def should_process_text(text: str) -> bool:
     if not text:
         print("[Confidence] ❌ Empty.")
@@ -346,11 +347,36 @@ def speak(text: str):
 # endregion
 
 # region Command hotwords detection
+from ollama_api import ask_ollama
+import re
+
 def extract_user_switch(text: str) -> str | None:
-    # Match: "I'm Yana", "I am Kate", "Hey Lama I'm Stav", etc.
-    match = re.search(r"(?:hey\s+lama[, ]*)?\b(?:i[’'`]?m|i am)\s+([a-zA-Z]+)", text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip().capitalize()
+    """
+    Attempts to extract the user's name if they introduce themselves.
+    Uses pattern matching + LLM validation.
+    """
+
+    # 1. Pattern match for common name-introduction formats
+    match = re.search(r"(?:my name is|i[’'`]?[m]|i am)\s+([a-zA-Z]+)", text, re.IGNORECASE)
+    if not match:
+        return None
+
+    possible_name = match.group(1).strip().capitalize()
+
+    # 2. Ask the LLM to validate that this phrase is a name claim
+    prompt = f"""In the following sentence, does the speaker clearly indicate that their name is {possible_name}?
+
+    Sentence: "{text}"
+
+    Reply only with YES or NO."""
+    try:
+        reply = ask_ollama(prompt).strip().upper()
+        print(f"[User Switch] LLM confirmation: {reply}")
+        if "YES" in reply:
+            return possible_name
+    except Exception as e:
+        print(f"[User Switch] LLM check failed: {e}")
+
     return None
 
 def handle_exit_flow() -> bool:
@@ -372,24 +398,11 @@ def detect_mentioned_users(user_id: str, text: str, profiles: dict) -> list[str]
     ]
 # endregion
 
-# region Memory management
-def load_all_memory(filename=PROFILE_FILE):
-    try:
-        with open(filename, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-def load_user_memory(user_id, filename="PROFILE_FILE"):
-    all_memory = load_all_memory(filename)
-    return all_memory.get(user_id, {})
-# endregion
-
 def main():
     global user_id, calibration_done, calibration
     user_id = "Yana"
-    memory = load_user_memory(user_id)
-    all_profiles = load_static_profile()
+    memory = query_profile_memory(user_id, "__FULL__")
+    all_profiles = load_all_vector_profiles()
     instructions = get_instructions(user_id)
     chat_history = []
 
@@ -439,12 +452,19 @@ def main():
             # === User switch
             new_user = extract_user_switch(user_text)
             if new_user:
-                user_id = new_user
+                new_user_id = new_user
                 if user_id in all_profiles:
                     speak(f"Hi {user_id}!")
+                    user_id = new_user_id
+                    memory = query_profile_memory(user_id, "__FULL__")
                 else:
-                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Please, tell me something about yourself.")
-                    save_static_profile(user_id, {"user_name": user_id})
+                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Do you want me to remember you?")
+                    if stream_until_silence().strip().lower() in ["yes", "sure", "okay"]:
+                        speak("Great! I will remember you from now on.")
+                        all_profiles[user_id] = {}
+                        update_profile_vector(all_profiles[user_id], user_id)
+                    else:
+                        speak("No problem. How can I help you?")
                 break
 
             # === Exit
@@ -470,15 +490,15 @@ def main():
                 prompt = f"""
                 You're an instruction parser for an AI assistant.
 
-                1. Extract any persistent instruction the user is giving to the assistant.
-                2. Check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
+                1. Make a decision if users wants to instruct you how to talk to him from now on.
+                2. If yes, check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
                 3. If so, return both the new instruction and the one to remove.
 
                 Return a **JSON list**:
                 - [new_instruction] → if only adding
                 - [new_instruction, instruction_to_remove] → if replacing
 
-                If there's no instruction, return [].
+                If it's not an instruction, return [].
 
                 User said: "{user_text}"
                 """
@@ -509,7 +529,6 @@ def main():
 
             chat_history.append({"role": "user", "content": user_text})
             chat_history.append({"role": "assistant", "content": reply})
-            save_history(user_id, chat_history)
             speak(reply)
 
             # Reset for next loop
