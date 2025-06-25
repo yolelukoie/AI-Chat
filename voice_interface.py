@@ -88,7 +88,6 @@ rolling_noise = RollingStats()
 
 # endregion
 
-
 def transcribe_local(wav_io: io.BytesIO) -> str:
     wav_io.seek(0)
     with sf.SoundFile(wav_io) as audio_file:
@@ -186,55 +185,6 @@ def stream_until_silence(timeout=6.0) -> str:
     print(f"[Whisper] Final transcript: {transcript}")
     return transcript
 
-"""
-def record_until_silence() -> io.BytesIO:
-    buffer = []
-    speech_started = False
-    silence_frames = 0
-    speech_frames = 0
-
-    with sd.RawInputStream(
-        samplerate=FS, blocksize=FRAME_SIZE, dtype='int16', channels=1
-    ) as stream:
-        print("[VAD] Waiting for speech...")
-        while True:
-            frame, _ = stream.read(FRAME_SIZE)
-            frame_np = np.frombuffer(frame, dtype='int16')
-            frame_bytes = frame_np.tobytes()
-
-            is_speech = vad.is_speech(frame_bytes, FS)
-            filtered = is_speech and is_real_speech(frame_np)
-            if is_speech and not filtered:
-                print("[FILTER] VAD triggered, but rejected by is_real_speech()")
-            
-            if filtered and not speech_started:
-                print("✅ Real speech detected — starting capture")
-
-            if not speech_started:
-                if filtered:
-                    speech_frames += 1
-                else:
-                    speech_frames = 0
-                if speech_frames * FRAME_DURATION_MS >= 200:
-                    speech_started = True
-                    print("[VAD] Speech started")
-            else:
-                buffer.append(frame_np)
-                if filtered:
-                    silence_frames = 0
-                else:
-                    silence_frames += 1
-                if silence_frames * FRAME_DURATION_MS > 500:
-                    print("[VAD] Speech ended")
-                    break
-
-    audio_np = np.concatenate(buffer)
-    wav_io = io.BytesIO()
-    sf.write(wav_io, audio_np, FS, format='WAV', subtype='PCM_16')
-    wav_io.seek(0)
-    wav_io.name = "speech.wav"
-    return wav_io
-"""
 # region User interrupt detection
 def detect_user_interrupt(similarity_threshold=0.80) -> bool:
     if interrupt_audio_queue.empty():
@@ -304,37 +254,6 @@ def detect_interrupting_speech() -> bool:
     return True
 
 # endregion
-
-"""
-def detect_interrupting_speech() -> bool:
-    
-    # Returns True only if real speech characteristics are detected in a short recording.
-    # Uses both amplitude and frequency band checks.
-    duration_samples = int(0.4 * FS)
-    audio = sd.rec(duration_samples, samplerate=FS, channels=1, dtype='int16')
-    sd.wait()
-    audio_np = audio[:, 0] if audio.ndim > 1 else audio
-
-    max_amp = np.max(np.abs(audio_np))
-    if max_amp < 2000:
-        print(f"[VAD] Ignored quiet background (amp={max_amp})")
-        return False
-
-    # Apply FFT for frequency band analysis
-    freqs = np.fft.rfft(audio_np * np.hamming(len(audio_np)))
-    freqs_power = np.abs(freqs)
-    speech_band_power = np.sum(freqs_power[100:300])  # Roughly 800–2400 Hz
-    low_freq_noise = np.sum(freqs_power[10:80])       # Hum and background
-
-    print(f"[VAD] Amp={max_amp}, SpeechBand={speech_band_power:.0f}, Hum={low_freq_noise:.0f}")
-
-    if speech_band_power < 20000 or speech_band_power < 3 * low_freq_noise:
-        print("[VAD] Frequency pattern not matching speech — ignored")
-        return False
-
-    print("🛑 Real speech detected — interrupting.")
-    return True
-    """
 
 # region Confidence scoring for input
 def should_process_text(text: str) -> bool:

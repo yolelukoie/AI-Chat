@@ -1,35 +1,13 @@
-import requests
-import json
+
 from ollama_api import ask_ollama
-from memory_engine import retrieve_memory, retrieve_memory_by_type, add_memory, client
-from fact_extractor import extract_and_store_facts
-from pathlib import Path
-from profile_updater import load_static_profile
+from memory_engine import retrieve_memory_by_type
 from profile_vector_store import profile_to_description
-from difflib import SequenceMatcher
 from sentence_transformers import SentenceTransformer, util
-from instructions_store import get_instructions
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 # Global in-memory cache
 _memory_cache = {}
-
-# ----- region Memory Management -----
-
-
-def memory_to_prompt(memory):
-    lines = []
-    if "user_name" in memory:
-        lines.append(f"The user's name is {memory['user_name']}.")
-    if "language_preferences" in memory:
-        langs = ", ".join(memory["language_preferences"])
-        lines.append(f"The user speaks: {langs}.")
-    if "interests" in memory:
-        interests = ", ".join(memory["interests"])
-        lines.append(f"The user is interested in: {interests}.")
-    return "\n".join(lines)
-# endregion
 
 def fuzzy_cache_retrieve(user_id: str, user_input: str, top_k=15, similarity_threshold=0.93):
     """

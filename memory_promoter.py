@@ -1,13 +1,10 @@
-from memory_engine import retrieve_memory, add_memory, collection
+from memory_engine import retrieve_memory_by_type, add_memory, collection
 from ollama_api import ask_ollama
 from datetime import datetime, timedelta
 from memory_ranker import rank_memories
-from profile_updater import update_static_profile
-from session_summary import extract_profile_facts_from_chat
-
 
 def promote_summaries_to_facts(user_id):
-    summaries = retrieve_memory(user_id, "recent sessions", top_k=20, memory_type="summary")
+    summaries = retrieve_memory_by_type(user_id, "recent sessions", top_k=20, memory_type="summary")
     reference_text = "user interests, personal events, emotional experiences, daily life"
     top_summaries = rank_memories(summaries, reference_text=reference_text, max_facts=5)
 
@@ -34,7 +31,7 @@ def promote_summaries_to_facts(user_id):
 
     for fact in facts:
         add_memory(user_id, fact, memory_type="fact")
-        print(f"✅ Promoted to dynamic fact: {content}")
+        print(f"✅ Promoted to dynamic fact: {fact}")
 
 def run_memory_promotion(user_id):
     promote_summaries_to_facts(user_id)
