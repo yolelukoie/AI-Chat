@@ -2,32 +2,32 @@ import io
 import os
 import re
 import time
-import numpy as np
-import sounddevice as sd
-import soundfile as sf
-import webrtcvad
 import pygame
 import json
 import uuid
+import numpy as np
+import sys
+import librosa
 from pathlib import Path
+import webrtcvad
+import sounddevice as sd
+import soundfile as sf
+from queue import Queue
+from TTS.api import TTS
+from threading import Thread
+from collections import deque
 from faster_whisper import WhisperModel
 from instructions_store import add_instruction, get_instructions, remove_instruction
 from promotion_tracker import should_run_promotion, update_promotion_time
 from memory_promoter import promote_summaries_to_facts as run_memory_promotion
 from compression_tracker import should_run_compression, update_compression_time
+from memory_engine import is_memory_removal_request, find_and_remove_matching_memory, query_profile_memory, update_profile_vector, load_all_profile_vectors
 from chat_history import save_history
 from session_summary import summarize_session 
 from memory_promoter import compress_old_memory
 from ollama_api import ask_ollama
 from helpers import chat, chat_about_users
 from vosk import Model, KaldiRecognizer
-from threading import Thread
-from queue import Queue
-from TTS.api import TTS
-import sys
-import librosa
-from collections import deque
-from profile_vector_store import query_profile_memory, update_profile_vector, load_all_profile_vectors
 
 # Avoid HuggingFace symlink errors on Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
@@ -347,9 +347,6 @@ def speak(text: str):
 # endregion
 
 # region Command hotwords detection
-from ollama_api import ask_ollama
-import re
-
 def extract_user_switch(text: str) -> str | None:
     """
     Attempts to extract the user's name if they introduce themselves.
@@ -390,12 +387,51 @@ def handle_exit_flow() -> bool:
         speak("Okay, continuing.")
         return False
 
-def detect_mentioned_users(user_id: str, text: str, profiles: dict) -> list[str]:
-    input_lower = text.lower()
-    return [
-        name for name in profiles
-        if name.lower() != user_id.lower() and name.lower() in input_lower
-    ]
+def extract_user_name_if_exists(text: str) -> str | None:
+    """
+    If the user says something like "My name is X", extract X and check if the user exists in the DB.
+    Return the name if valid and known. Otherwise, return None.
+    """
+
+    # 1. Try to match common intro patterns
+    match = re.search(r"\b(?:my\s+name\s+is|i[’'`]?\s*am|i\s+go\s+by)\s+([A-Z][a-z]+)", text, re.IGNORECASE)
+    if not match:
+        return None
+
+    possible_name = match.group(1).strip().capitalize()
+
+    # 2. Ask LLM: is this really a name claim?
+    prompt = f"""A user said: "{text}"
+
+    Does this clearly mean their name is '{possible_name}'?
+
+    Only reply YES or NO."""
+    try:
+        reply = ask_ollama(prompt).strip().upper()
+        if "YES" not in reply:
+            return None
+    except Exception as e:
+        print(f"[NameCheck] LLM check failed: {e}")
+        return None
+
+    # 3. Check if this user already exists in the vector DB
+    if user_exists(possible_name):
+        return possible_name
+
+    return None
+
+def user_exists(user_id: str) -> bool:
+    memory_collection, profile_collection = get_collections(user_id)
+
+    # Check general memory
+    results = memory_collection.get(where={"user": user_id}, limit=1)
+    if results.get("documents"):
+        return True
+
+    # Check profile memory
+    results = profile_collection.get(where={"user": user_id}, limit=1)
+    return bool(results.get("documents"))
+
 # endregion
 
 def main():
@@ -449,11 +485,10 @@ def main():
             lower_text = user_text.lower()
 
             # === User switch
-            new_user = extract_user_switch(user_text)
+            new_user = extract_user_name_if_exists(user_text)
             if new_user:
-                new_user_id = new_user
-                if user_id in all_profiles:
-                    speak(f"Hi {user_id}!")
+                if user_exists(new_user):
+                    speak(f"Hi {new_user}!")
                     user_id = new_user_id
                     memory = query_profile_memory(user_id, "__FULL__")
                 else:
@@ -515,6 +550,12 @@ def main():
                 except json.JSONDecodeError:
                     print("❌ Failed to parse instruction response.")
                     speak("I didn’t understand that instruction. Could you say it again?")
+                user_text = ""
+                continue
+
+            if is_memory_removal_request(user_text):
+                find_and_remove_matching_memory(user_id, user_text)
+                speak("Okay, I've removed that from memory.")
                 user_text = ""
                 continue
 
