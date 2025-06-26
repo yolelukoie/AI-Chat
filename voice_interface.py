@@ -445,7 +445,6 @@ def main():
                     print("[Main] Skipping junk or background noise.")
                     continue
 
-
             print(f"[User] {user_text}")
             lower_text = user_text.lower()
 
@@ -480,7 +479,6 @@ def main():
                     if should_run_promotion(user_id):
                         run_memory_promotion(user_id)
                         update_promotion_time(user_id)
-                    calibration_done = False
                     break
                 else:
                     break
@@ -490,7 +488,7 @@ def main():
                 prompt = f"""
                 You're an instruction parser for an AI assistant.
 
-                1. Make a decision if users wants to instruct you how to talk to him from now on.
+                1. Make a decision if users wants to instruct you on how to talk to him from now on.
                 2. If yes, check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
                 3. If so, return both the new instruction and the one to remove.
 
