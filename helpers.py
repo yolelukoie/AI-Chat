@@ -1,7 +1,7 @@
 
 from ollama_api import ask_ollama
 from memory_engine import retrieve_memory_by_type
-from profile_vector_store import profile_to_description
+from memory_engine import profile_to_description
 from sentence_transformers import SentenceTransformer, util
 
 embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -51,7 +51,7 @@ def filter_relevant(chunks, threshold=0.9):
         result.append(content)
     return result
 
-def chat(user_id: str, user_input: str, memory, all_profiles, instructions) -> str:
+def chat(user_id: str, user_input: str, memory, instructions) -> str:
     # vector_profile = query_profile_memory(user_id, "who is the user")
 
     similarity_threshold = 0.93
@@ -83,10 +83,10 @@ def chat(user_id: str, user_input: str, memory, all_profiles, instructions) -> s
     use_static_profile = not memory_chunks and not summary_section
 
     # --- STATIC MEMORY LOADING ---
-    static_profile = all_profiles.get(user_id, {})
+    profile_memory = memory
     user_profile_section = ""
     if use_static_profile:
-        user_profile_section = "\n\n[USER PROFILE]\n" + profile_to_description(static_profile, user_id)
+        user_profile_section = "\n\n[USER PROFILE]\n" + profile_to_description(profile_memory, user_id)
 
     # --- FINAL COMBINED PROMPT ---
     prompt = """

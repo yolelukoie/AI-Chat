@@ -1,7 +1,7 @@
 import json
 from ollama_api import ask_ollama
 from memory_engine import add_memory
-from profile_vector_store import update_profile_vector
+from memory_engine import update_profile_vector
 
 def summarize_session(user_id, chat_history):
     # Convert to plain text for LLM

@@ -1,4 +1,4 @@
-from memory_engine import retrieve_memory_by_type, add_memory, collection
+from memory_engine import retrieve_memory_by_type, add_memory, get_collections
 from ollama_api import ask_ollama
 from datetime import datetime, timedelta
 from memory_ranker import rank_memories
@@ -38,7 +38,8 @@ def run_memory_promotion(user_id):
 
 def compress_old_memory(user_id, max_age_days=7, memory_type="fact"):
     # Step 1: Fetch all matching memory entries
-    results = collection.get(where={"user": user_id})
+    memory_collection, _ = get_collections(user_id)
+    results = memory_collection.get(where={"user": user_id})
     docs = results.get("documents", [])
     metas = results.get("metadatas", [])
     ids = results.get("ids", [])
@@ -85,4 +86,4 @@ Summary:
     add_memory(user_id, summary, memory_type="compressed")
 
     print(f"🗑 Deleting {len(old_ids)} outdated memory entries...")
-    collection.delete(ids=old_ids)
+    memory_collection.delete(ids=old_ids)
