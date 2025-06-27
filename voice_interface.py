@@ -567,6 +567,5 @@ def main():
             # Reset for next loop
             user_text = ""
 
-instructions
 if __name__ == "__main__":
     main()
