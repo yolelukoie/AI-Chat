@@ -522,36 +522,47 @@ def main():
             if any(k in lower_text for k in INSTRUCTION_TRIGGERS):
                 prompt = f"""
                 You're an instruction parser for an AI assistant.
-
-                1. Make a decision if users wants to instruct you on how to talk to him from now on.
-                2. If yes, check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
-                3. If so, return both the new instruction and the one to remove.
-
-                Return a **JSON list**:
-                - [new_instruction] → if only adding
-                - [new_instruction, instruction_to_remove] → if replacing
-
-                If it's not an instruction, return [].
-
+                Was he trying to give you an instruction on how to talk to him or was he just talking normally?
+                If you think it was an instruction, return YES.
+                If not, return NO.
                 User said: "{user_text}"
                 """
-                raw_response = ask_ollama(prompt).strip()
-                print(f"[Instruction Raw Response] {raw_response}")
-                try:
-                    parsed = json.loads(raw_response)
-                    if parsed:
-                        new_instruction = parsed[0]
-                        instruction_to_remove = parsed[1] if len(parsed) > 1 else None
-                        if instruction_to_remove:
-                            removed = remove_instruction(user_id, instruction_to_remove)
-                            print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
-                        add_instruction(user_id, new_instruction)
-                        speak(f"Got it! From now on I will {new_instruction}.")
-                except json.JSONDecodeError:
-                    print("❌ Failed to parse instruction response.")
-                    speak("I didn’t understand that instruction. Could you say it again?")
-                user_text = ""
-                continue
+                reply = ask_ollama(prompt).strip().upper()
+                if "YES" in reply:
+                    prompt = f"""
+                    You're an instruction parser for an AI assistant.
+
+                    1. Make a decision how the users wants you to talk to him from now on.
+                    2. Check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
+                    3. If so, return both the new instruction and the one to remove.
+
+                    Return a **JSON list**:
+                    - [new_instruction] → if only adding
+                    - [new_instruction, instruction_to_remove] → if replacing
+
+                    If it's not an instruction, return [].
+
+                    User said: "{user_text}"
+                    """
+                    raw_response = ask_ollama(prompt).strip()
+                    print(f"[Instruction Raw Response] {raw_response}")
+                    try:
+                        parsed = json.loads(raw_response)
+                        if parsed:
+                            new_instruction = parsed[0]
+                            instruction_to_remove = parsed[1] if len(parsed) > 1 else None
+                            if instruction_to_remove:
+                                removed = remove_instruction(user_id, instruction_to_remove)
+                                print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
+                            add_instruction(user_id, new_instruction)
+                            print(f"Got it! From now on I will {new_instruction}.")
+                    except json.JSONDecodeError:
+                        print("❌ Failed to parse instruction response.")
+                        speak("I didn’t understand that instruction. Could you say it again?")
+                    user_text = ""
+                    continue
+                else:
+                    continue
 
             if is_memory_removal_request(user_text):
                 find_and_remove_matching_memory(user_id, user_text)
