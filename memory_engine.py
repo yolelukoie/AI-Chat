@@ -159,9 +159,9 @@ def query_profile_memory(user_id: str, query: str, top_k=3, profile_collection =
     if profile_collection is None:
         _, profile_collection = get_collections(user_id)
     if query == "__FULL__":
-        results = profile_collection.query(where={"user": user_id}, n_results=100)
-        if results.get("documents") and results["documents"][0]:
-            return "\n".join(results["documents"][0])
+        results = profile_collection.get(where={"user": user_id})
+        if results.get("documents"):
+            return "\n".join(results["documents"])
         return ""
 
     embedding = embed([query])
@@ -171,7 +171,7 @@ def query_profile_memory(user_id: str, query: str, top_k=3, profile_collection =
     return []
 
 
-def load_all_vector_profiles(profile_collection = None):
+def load_all_vector_profiles(user_id: str, profile_collection = None):
     if profile_collection is None:
         _, profile_collection = get_collections()
     # Get all user documents

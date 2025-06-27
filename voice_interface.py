@@ -21,8 +21,7 @@ from instructions_store import add_instruction, get_instructions, remove_instruc
 from promotion_tracker import should_run_promotion, update_promotion_time
 from memory_promoter import promote_summaries_to_facts as run_memory_promotion
 from compression_tracker import should_run_compression, update_compression_time
-from memory_engine import is_memory_removal_request, find_and_remove_matching_memory, query_profile_memory, update_profile_vector, load_all_profile_vectors
-from chat_history import save_history
+from memory_engine import is_memory_removal_request, find_and_remove_matching_memory, query_profile_memory, update_profile_vector, load_all_vector_profiles, get_collections
 from session_summary import summarize_session 
 from memory_promoter import compress_old_memory
 from ollama_api import ask_ollama
@@ -438,7 +437,7 @@ def main():
     global user_id, calibration_done, calibration
     user_id = "Yana"
     memory = query_profile_memory(user_id, "__FULL__")
-    all_profiles = load_all_vector_profiles()
+    # all_profiles = load_all_vector_profiles ()
     instructions = get_instructions(user_id)
     chat_history = []
 
@@ -489,16 +488,10 @@ def main():
             if new_user:
                 if user_exists(new_user):
                     speak(f"Hi {new_user}!")
-                    user_id = new_user_id
+                    user_id = new_user
                     memory = query_profile_memory(user_id, "__FULL__")
                 else:
-                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Do you want me to remember you?")
-                    if stream_until_silence().strip().lower() in ["yes", "sure", "okay"]:
-                        speak("Great! I will remember you from now on.")
-                        all_profiles[user_id] = {}
-                        update_profile_vector(all_profiles[user_id], user_id)
-                    else:
-                        speak("No problem. How can I help you?")
+                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Would you like to tell me something about yourself?")
                 break
 
             # === Exit
@@ -550,29 +543,30 @@ def main():
                 except json.JSONDecodeError:
                     print("❌ Failed to parse instruction response.")
                     speak("I didn’t understand that instruction. Could you say it again?")
-                user_text = ""
+                    user_text = ""
                 continue
 
             if is_memory_removal_request(user_text):
                 find_and_remove_matching_memory(user_id, user_text)
-                speak("Okay, I've removed that from memory.")
-                user_text = ""
+                print("Okay, I've removed that from memory.")
                 continue
 
             # === Normal conversation
-            mentioned = detect_mentioned_users(user_id, user_text, all_profiles)
-            if mentioned:
-                reply = chat_about_users(user_id, user_text, mentioned, all_profiles)
-            else:
-                reply = chat(user_id, user_text, memory, all_profiles, instructions)
+            if not user_text == "":
+                mentioned = extract_user_name_if_exists(user_text)
+                if mentioned:
+                    user_memory = query_profile_memory(mentioned, "__FULL__")
+                    reply = chat_about_users(user_id, user_text, mentioned, user_memory)
+                else:
+                    reply = chat(user_id, user_text, memory, instructions)
 
-            chat_history.append({"role": "user", "content": user_text})
-            chat_history.append({"role": "assistant", "content": reply})
-            speak(reply)
+                chat_history.append({"role": "user", "content": user_text})
+                chat_history.append({"role": "assistant", "content": reply})
+                speak(reply)
 
             # Reset for next loop
             user_text = ""
 
-
+instructions
 if __name__ == "__main__":
     main()
