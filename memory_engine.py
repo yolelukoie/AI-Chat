@@ -80,6 +80,7 @@ def is_memory_removal_request(user_text: str) -> bool:
     Only reply with YES or NO."""
     try:
         reply = ask_ollama(prompt).strip().upper()
+        print("Is memory removal request?")
         return "YES" in reply
     except:
         return False
@@ -126,15 +127,17 @@ def profile_to_description(user_profile: dict, user_id: str) -> str:
     prompt = f"""
 You are a helpful assistant preparing a memory description for a user profile.
 
-Below is structured profile data for a user named {user_id}. Your job is to convert it into a clear, readable summary that could help an assistant recall this person’s background, traits, preferences, and relationships.
+Below is structured profile data for a user named {user_id}. Take that data and convert it into a clear, readable summary that could help an assistant recall this person’s background, traits, preferences, and relationships.
 
-Don't invent anything — use only the information provided. Be concise and factual.
+❗Important:
+- Do NOT invent memory.Don't invent anything — use only the information provided. Be concise and factual.
 
 Structured profile data:
 {json.dumps(user_profile, indent=2)}
 
 Text summary:
 """
+    print("Profile description:")
     return ask_ollama(prompt).strip()
 
 def update_profile_vector(user_profile: dict, user_id: str, profile_collection = None):
@@ -161,12 +164,14 @@ def query_profile_memory(user_id: str, query: str, top_k=3, profile_collection =
     if query == "__FULL__":
         results = profile_collection.get(where={"user": user_id})
         if results.get("documents"):
+            print(f"📄 [__FULL__] Profile memory for '{user_id}':\n{json.dumps(results['documents'], indent=2)}")
             return "\n".join(results["documents"])
         return ""
 
     embedding = embed([query])
     results = profile_collection.query(query_embeddings=[embedding], where={"user": user_id}, n_results=top_k)
     if results.get("documents") and results["documents"][0]:
+        print(f"📄 [Query: {query}] Profile search results for '{user_id}':\n{json.dumps(results['documents'], indent=2)}")
         return results["documents"][0]
     return []
 

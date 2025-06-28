@@ -240,13 +240,13 @@ def detect_interrupting_speech() -> bool:
 
     # Adaptive logic
     if max_amp < amp_threshold:
-        print("[VAD] ❌ Rejected: Amplitude too low")
+        # print("[VAD] ❌ Rejected: Amplitude too low")
         return False
     if speech_band < band_threshold:
-        print("[VAD] ❌ Rejected: Not enough speech band energy")
+        # print("[VAD] ❌ Rejected: Not enough speech band energy")
         return False
     if speech_band < 3 * low_noise:
-        print("[VAD] ❌ Rejected: Too much background hum")
+        # print("[VAD] ❌ Rejected: Too much background hum")
         return False
 
     print("🛑 Real speech detected — interrupting.")
@@ -407,17 +407,16 @@ def extract_user_name_if_exists(text: str) -> str | None:
     Only reply YES or NO."""
     try:
         reply = ask_ollama(prompt).strip().upper()
+        print("extract_user_name_if_exists")
         if "YES" not in reply:
             return None
+        else:
+            return possible_name
     except Exception as e:
         print(f"[NameCheck] LLM check failed: {e}")
         return None
 
-    # 3. Check if this user already exists in the vector DB
-    if user_exists(possible_name):
-        return possible_name
-
-    return None
+        
 
 def user_exists(user_id: str) -> bool:
     memory_collection, profile_collection = get_collections(user_id)
@@ -451,7 +450,6 @@ def main():
         if not hotword_audio:
             continue
 
-        # Transcribe the hotword-triggered input
         hotword_text = transcribe_local(hotword_audio).strip()
 
         # === Remove excessive repetition
@@ -483,18 +481,7 @@ def main():
             print(f"[User] {user_text}")
             lower_text = user_text.lower()
 
-            # === User switch
-            new_user = extract_user_name_if_exists(user_text)
-            if new_user:
-                if user_exists(new_user):
-                    speak(f"Hi {new_user}!")
-                    user_id = new_user
-                    memory = query_profile_memory(user_id, "__FULL__")
-                else:
-                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Would you like to tell me something about yourself?")
-                break
-
-            # === Exit
+             # === Exit
             if "exit" in lower_text:
                 if handle_exit_flow():
                     try:
@@ -511,6 +498,19 @@ def main():
                 else:
                     break
 
+
+
+            # === User switch
+            new_user = extract_user_name_if_exists(user_text)
+            if new_user:
+                if user_exists(new_user):
+                    speak(f"Hi {new_user}!")
+                    user_id = new_user
+                    memory = query_profile_memory(user_id, "__FULL__")
+                else:
+                    speak(f"Hi {user_id}! It looks like we haven't chatted before. Would you like to tell me something about yourself?")
+                break
+
             # === Instructions
             if any(k in lower_text for k in INSTRUCTION_TRIGGERS):
                 prompt = f"""
@@ -521,6 +521,7 @@ def main():
                 User said: "{user_text}"
                 """
                 reply = ask_ollama(prompt).strip().upper()
+                print("INstruction check")
                 if "YES" in reply:
                     prompt = f"""
                     You're an instruction parser for an AI assistant.
@@ -553,10 +554,8 @@ def main():
                         print("❌ Failed to parse instruction response.")
                         speak("I didn’t understand that instruction. Could you say it again?")
                     user_text = ""
-                    continue
-                else:
-                    continue
-
+                    break
+                
             if is_memory_removal_request(user_text):
                 find_and_remove_matching_memory(user_id, user_text)
                 print("Okay, I've removed that from memory.")
