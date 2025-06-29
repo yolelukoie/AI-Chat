@@ -2,6 +2,7 @@ import io
 import os
 import re
 import time
+from urllib import response
 import pygame
 import json
 import uuid
@@ -143,7 +144,68 @@ def listen_for_hotword(hotword: str = "lama") -> io.BytesIO | None:
     wav_io.name = "intent.wav"
     return wav_io
 
-def stream_until_silence(timeout=6.0) -> str:
+def stream_until_silence(chunk_duration=6.0, silence_threshold=1.5, max_total_duration=60.0) -> str:
+    print("[Whisper] Listening in chunks...")
+
+    all_audio = []
+    start_time = time.time()
+    last_voice_time = time.time()
+    silence_detected = False
+
+    with sd.RawInputStream(samplerate=FS, blocksize=FRAME_SIZE, dtype='int16', channels=1) as stream:
+        while True:
+            chunk = []
+            chunk_start = time.time()
+            while time.time() - chunk_start < chunk_duration:
+                frame, _ = stream.read(FRAME_SIZE)
+                chunk.append(frame)
+                frame_bytes = bytes(frame)
+
+                if vad.is_speech(frame_bytes, FS):
+                    last_voice_time = time.time()
+
+                if time.time() - last_voice_time > silence_threshold:
+                    print("[Whisper] Detected end of speech mid-chunk.")
+                    silence_detected = True
+                    break
+
+            all_audio.extend(chunk)
+
+            # Check if we have silence at the end of the chunk
+            if silence_detected:
+                print("[Whisper] Final end of speech.")
+                break
+            silence_duration = time.time() - last_voice_time
+
+            # Check if silence threshold exceeded
+            if silence_duration > silence_threshold:
+                print("[Whisper] Silence threshold exceeded.")
+                speak("hey, are you still there?")
+                break
+
+            if time.time() - start_time > max_total_duration:
+                print("[Whisper] Max duration reached.")
+                break
+
+            if silence_duration > max_total_duration:
+                print("[Whisper] Too much silence, stopping.")
+                
+                break
+
+
+    # Combine all frames and convert to BytesIO
+    full_audio = b''.join(all_audio)
+    wav_io = io.BytesIO()
+    sf.write(wav_io, np.frombuffer(full_audio, dtype='int16'), FS, format='WAV', subtype='PCM_16')
+    wav_io.seek(0)
+
+    segments, _ = whisper_model.transcribe(wav_io, language="en")
+    transcript = " ".join([seg.text.strip() for seg in segments])
+    print(f"[Whisper] Final transcript: {transcript}")
+    return transcript
+
+
+"""def stream_until_silence(timeout=6.0) -> str:
     print("[Whisper] Listening for full utterance...")
 
     buffer = []
@@ -181,10 +243,12 @@ def stream_until_silence(timeout=6.0) -> str:
     segments, _ = whisper_model.transcribe(wav_io, language="en")
     transcript = " ".join([seg.text.strip() for seg in segments])
     print(f"[Whisper] Final transcript: {transcript}")
-    return transcript
+    return transcript"""
 # endregion
 
 # region User interrupt detection
+
+
 def detect_user_interrupt(similarity_threshold=0.80) -> bool:
     if interrupt_audio_queue.empty():
         return False
@@ -213,7 +277,32 @@ def cosine_similarity(vec1, vec2):
     b = np.linalg.norm(vec1) * np.linalg.norm(vec2)
     return a / b if b != 0 else 0
 
-def detect_interrupting_speech() -> bool:
+def detect_interrupting_speech(hotwords={"stop", "lama", "wait", "excuse"}):
+    print("[INTERRUPT] Listening for interrupt command...")
+
+    rec = KaldiRecognizer(vosk_model, FS)
+    rec.SetWords(False)
+
+    # Record ~1 sec of audio (non-blocking)
+    duration_samples = int(1.0 * FS)
+    audio = sd.rec(duration_samples, samplerate=FS, channels=1, dtype='int16')
+    sd.wait()
+
+    # Feed audio to recognizer
+    rec.AcceptWaveform(audio.tobytes())
+    result = json.loads(rec.Result())
+    text = result.get("text", "").lower()
+
+    print(f"[INTERRUPT] Heard: {text}")
+    for hw in hotwords:
+        if hw in text:
+            print(f"🛑 Interrupt word detected: {hw}")
+            return True
+
+    return False
+
+"""def detect_interrupting_speech() -> bool:
+    # uses FFT/VAD
     duration_samples = int(0.4 * FS)
     audio = sd.rec(duration_samples, samplerate=FS, channels=1, dtype='int16')
     sd.wait()
@@ -251,7 +340,7 @@ def detect_interrupting_speech() -> bool:
 
     print("🛑 Real speech detected — interrupting.")
     return True
-
+"""
 # endregion
 
 # region Confidence scoring for input
@@ -294,7 +383,7 @@ def clean_text_for_tts(text: str) -> str:
     # Remove emojis and characters not in TTS vocabulary
     return re.sub(r"[^\x00-\x7F]+", "", text)
 
-def buffer_mic_during_speak(duration=0.4):
+def buffer_mic_during_speak(duration=0.2): # set back tp 0.4 if it crashes
     while pygame.mixer.music.get_busy():
         audio = sd.rec(int(FS * duration), samplerate=FS, channels=1, dtype='int16')
         sd.wait()
@@ -304,6 +393,9 @@ def speak(text: str):
     text = clean_text_for_tts(text.strip())
     if not text.strip():
         print("[TTS] Warning: empty reply, skipping speech.")
+        return
+    if len(text.split()) < 2:
+        print(f"[TTS] Skipping too-short TTS input: '{text}'")
         return
 
     print(f"[TTS] Speaking: {text}")
@@ -332,91 +424,82 @@ def speak(text: str):
     while pygame.mixer.music.get_busy():
         elapsed = time.time() - start_time
         if elapsed < 1.0:
-            time.sleep(0.1)
+            time.sleep(0.05) # set back tp 0.1 if it crashes
             continue
 
         # Check for user interrupt
         if detect_interrupting_speech():
-            if detect_user_interrupt():
-                pygame.mixer.music.stop()
-                print("[TTS] 🔇 Interrupted by user speech")
-                return
+            #if detect_user_interrupt():
+            pygame.mixer.music.stop()
+            print("[TTS] 🔇 Interrupted by user speech")
+            return
 
         time.sleep(0.05)
 # endregion
 
 # region Command hotwords detection
-def extract_user_switch(text: str) -> str | None:
+
+def deal_with_instruction(user_id: str, user_text: str):
+    print(f"[DEBUG] deal_with_instruction() called with text: {user_text}")
+
+    prompt = f"""
+    You're an instruction parser for an AI assistant.
+
+    1. Make a decision how the users wants you to talk to him from now on.
+    2. Check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
+    3. If so, return both the new instruction and the one to remove.
+
+    Return a **JSON list**:
+    - [new_instruction] → if only adding
+    - [new_instruction, instruction_to_remove] → if replacing
+
+    If it's not an instruction, return [].
+
+    User said: "{user_text}"
     """
-    Attempts to extract the user's name if they introduce themselves.
-    Uses pattern matching + LLM validation.
-    """
+    raw_response = ask_ollama(prompt).strip()
 
-    # 1. Pattern match for common name-introduction formats
-    match = re.search(r"(?:my name is|i[’'`]?[m]|i am)\s+([a-zA-Z]+)", text, re.IGNORECASE)
-    if not match:
-        return None
-
-    possible_name = match.group(1).strip().capitalize()
-
-    # 2. Ask the LLM to validate that this phrase is a name claim
-    prompt = f"""In the following sentence, does the speaker clearly indicate that their name is {possible_name}?
-
-    Sentence: "{text}"
-
-    Reply only with YES or NO."""
+    if "```json" in raw_response:
+        raw_response = raw_response.split("```json")[1].split("```")[0].strip()
+    elif "```" in raw_response:
+        raw_response = raw_response.split("```")[1].split("```")[0].strip()
+   
+    print(f"[Instruction Raw Response] {raw_response}")
     try:
-        reply = ask_ollama(prompt).strip().upper()
-        print(f"[User Switch] LLM confirmation: {reply}")
-        if "YES" in reply:
-            return possible_name
-    except Exception as e:
-        print(f"[User Switch] LLM check failed: {e}")
+        parsed = json.loads(raw_response)
+        if parsed:
+            new_instruction = parsed[0]
+            instruction_to_remove = parsed[1] if len(parsed) > 1 else None
+            if instruction_to_remove:
+                removed = remove_instruction(user_id, instruction_to_remove)
+                print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
+            add_instruction(user_id, new_instruction)
+            print(f"Got it! From now on I will {new_instruction}.")
+    except json.JSONDecodeError:
+        print("❌ Failed to parse instruction response.")
+        speak("I didn’t understand that instruction. Could you say it again?")
+    user_text = ""
 
-    return None
-
-def handle_exit_flow() -> bool:
+def handle_exit_flow(chat_history, exit = False) -> bool:
     speak("Are you sure you want to exit? Say 'yes' or 'no'.")
     wav_io = stream_until_silence()
     answer = transcribe_local(wav_io).strip().lower()
-    if "yes" in answer:
-        speak("Goodbye!")
+    if exit or "yes" in answer:
+        speak("I didn't hear you for a while, so I stopped listening.")
+        try:
+            summarize_session(user_id, chat_history)
+        except Exception as e:
+            print(f"⚠️ Failed to summarize session: {type(e).__name__}: {e}")
+        if should_run_compression(user_id):
+            compress_old_memory(user_id)
+            update_compression_time(user_id)
+        if should_run_promotion(user_id):
+            run_memory_promotion(user_id)
+            update_promotion_time(user_id)
         return True
     else:
         speak("Okay, continuing.")
         return False
-
-def extract_user_name_if_exists(text: str) -> str | None:
-    """
-    If the user says something like "My name is X", extract X and check if the user exists in the DB.
-    Return the name if valid and known. Otherwise, return None.
-    """
-
-    # 1. Try to match common intro patterns
-    match = re.search(r"\b(?:my\s+name\s+is|i[’'`]?\s*am|i\s+go\s+by)\s+([A-Z][a-z]+)", text, re.IGNORECASE)
-    if not match:
-        return None
-
-    possible_name = match.group(1).strip().capitalize()
-
-    # 2. Ask LLM: is this really a name claim?
-    prompt = f"""A user said: "{text}"
-
-    Does this clearly mean their name is '{possible_name}'?
-
-    Only reply YES or NO."""
-    try:
-        reply = ask_ollama(prompt).strip().upper()
-        print("extract_user_name_if_exists")
-        if "YES" not in reply:
-            return None
-        else:
-            return possible_name
-    except Exception as e:
-        print(f"[NameCheck] LLM check failed: {e}")
-        return None
-
-        
 
 def user_exists(user_id: str) -> bool:
     memory_collection, profile_collection = get_collections(user_id)
@@ -433,7 +516,7 @@ def user_exists(user_id: str) -> bool:
 # endregion
 
 def main():
-    global user_id, calibration_done, calibration
+    global user_id, memory, calibration_done, calibration
     user_id = "Yana"
     memory = query_profile_memory(user_id, "__FULL__")
     # all_profiles = load_all_vector_profiles ()
@@ -476,106 +559,76 @@ def main():
                 user_text = stream_until_silence().strip()
                 if not should_process_text(user_text):
                     print("[Main] Skipping junk or background noise.")
-                    continue
+                    break
 
             print(f"[User] {user_text}")
             lower_text = user_text.lower()
 
              # === Exit
             if "exit" in lower_text:
-                if handle_exit_flow():
-                    try:
-                        summarize_session(user_id, chat_history)
-                    except Exception as e:
-                        print(f"⚠️ Failed to summarize session: {type(e).__name__}: {e}")
-                    if should_run_compression(user_id):
-                        compress_old_memory(user_id)
-                        update_compression_time(user_id)
-                    if should_run_promotion(user_id):
-                        run_memory_promotion(user_id)
-                        update_promotion_time(user_id)
-                    break
-                else:
-                    break
+                if not handle_exit_flow(chat_history):
+                    user_text = ""  # Reset after exit confirmation
 
+            # Pattern match for common name-introduction formats
+            match = re.search(r"\bmy name is\s+([A-Z][a-z]+)\b", user_text, re.IGNORECASE)
+            print("Name detected: ", match)
 
+            possible_name = match.group(1).strip().capitalize() if match else ""
 
-            # === User switch
-            new_user = extract_user_name_if_exists(user_text)
-            if new_user:
-                if user_exists(new_user):
-                    speak(f"Hi {new_user}!")
-                    user_id = new_user
+            # Extract potential names from the user text
+            tokens = re.findall(r'\b(?:[A-Z][a-z]+)\b', user_text)
+            mentioned_users = list(set(tokens))
+            if possible_name in mentioned_users:
+                mentioned_users.remove(possible_name)
+
+            prompt = f"""
+            You are Lama, the user's assistant. The message below is what the *user* said to you:
+            "{user_text}"
+            Your task is to analyze the user's message and decide what action should be taken:
+
+            1. is the user instructing you on how to talk to him from now on, setting a conversation style? If so, return 1.
+            2. is the user trying to remove or forget some memory or information stored about them? If so, return 2.
+            3. Does the user clearly indicate that user's name is {possible_name} ("Lama" is your name, not user's, so ignore name "Lama")? If so, return 3. 
+            4. Does the user clearly ask you a question about someone named {', '.join(mentioned_users)} ("Lama" is your name, not user's, so ignore name "Lama")? If so, return 4. 
+            5. If none of the above and the user is just talking, return 0.
+            """
+            response = ask_ollama(prompt)
+            matches = re.findall(r"\b([0-4])\b", response)
+            response_clean = matches[-1] if matches else None
+            print(f"[LLM Action] Parsed action code: {response_clean}")
+
+            if not response_clean:
+                return None
+            if response_clean == "1":
+                deal_with_instruction(user_id, user_text)
+                user_text = ""  # Reset after handling instruction
+            elif response_clean == "2":
+                find_and_remove_matching_memory(user_id, user_text)
+                print("Okay, I've removed that from memory.")
+                user_text = ""  # Reset after handling memory removal
+            elif response_clean == "3" and match:
+                if user_exists(possible_name):
+                    speak(f"Hi {possible_name}!")
+                    user_id = possible_name
                     memory = query_profile_memory(user_id, "__FULL__")
                 else:
                     speak(f"Hi {user_id}! It looks like we haven't chatted before. Would you like to tell me something about yourself?")
-                break
-
-            # === Instructions
-            if any(k in lower_text for k in INSTRUCTION_TRIGGERS):
-                prompt = f"""
-                You're an instruction parser for an AI assistant.
-                Was he trying to give you an instruction on how to talk to him or was he just talking normally?
-                If you think it was an instruction, return YES.
-                If not, return NO.
-                User said: "{user_text}"
-                """
-                reply = ask_ollama(prompt).strip().upper()
-                print("INstruction check")
-                if "YES" in reply:
-                    prompt = f"""
-                    You're an instruction parser for an AI assistant.
-
-                    1. Make a decision how the users wants you to talk to him from now on.
-                    2. Check if the new instruction conflicts with existing ones: {get_instructions(user_id)}
-                    3. If so, return both the new instruction and the one to remove.
-
-                    Return a **JSON list**:
-                    - [new_instruction] → if only adding
-                    - [new_instruction, instruction_to_remove] → if replacing
-
-                    If it's not an instruction, return [].
-
-                    User said: "{user_text}"
-                    """
-                    raw_response = ask_ollama(prompt).strip()
-                    print(f"[Instruction Raw Response] {raw_response}")
-                    try:
-                        parsed = json.loads(raw_response)
-                        if parsed:
-                            new_instruction = parsed[0]
-                            instruction_to_remove = parsed[1] if len(parsed) > 1 else None
-                            if instruction_to_remove:
-                                removed = remove_instruction(user_id, instruction_to_remove)
-                                print(f"🗑 Removed: {instruction_to_remove}") if removed else print("⚠️ Nothing removed.")
-                            add_instruction(user_id, new_instruction)
-                            print(f"Got it! From now on I will {new_instruction}.")
-                    except json.JSONDecodeError:
-                        print("❌ Failed to parse instruction response.")
-                        speak("I didn’t understand that instruction. Could you say it again?")
-                    user_text = ""
-                    break
-                
-            if is_memory_removal_request(user_text):
-                find_and_remove_matching_memory(user_id, user_text)
-                print("Okay, I've removed that from memory.")
-                continue
-
-            # === Normal conversation
-            if not user_text == "":
-                mentioned = extract_user_name_if_exists(user_text)
-                if mentioned:
-                    user_memory = query_profile_memory(mentioned, "__FULL__")
-                    reply = chat_about_users(user_id, user_text, mentioned, user_memory)
-                else:
-                    reply = chat(user_id, user_text, memory, instructions)
-
+                user_text = ""  # Reset after handling name introduction
+            elif response_clean == "4":
+                for name in mentioned_users:
+                    if user_exists(name):
+                        user_memory = query_profile_memory(name, "__FULL__")
+                        reply = chat_about_users(user_id, user_text, name, user_memory)
+                        chat_history.append({"role": "user", "content": user_text})
+                        chat_history.append({"role": "assistant", "content": reply})
+                        speak(reply)
+                        user_text = ""
+            elif response_clean == "0":
+                reply = chat(user_id, user_text, memory, instructions)
                 chat_history.append({"role": "user", "content": user_text})
                 chat_history.append({"role": "assistant", "content": reply})
                 speak(reply)
-
-            # Reset for next loop
-            user_text = ""
+                user_text = ""
 
 if __name__ == "__main__":
     main()

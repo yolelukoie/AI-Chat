@@ -86,11 +86,11 @@ def chat(user_id: str, user_input: str, memory, instructions) -> str:
     profile_memory = memory
     user_profile_section = ""
     if use_static_profile:
-        user_profile_section = "\n\n[USER PROFILE]\n" + profile_to_description(profile_memory, user_id)
+        user_profile_section = "\n\n[USER PROFILE]\n" + profile_memory
 
     # --- FINAL COMBINED PROMPT ---
     prompt = """
-        You are a helpful assistant with memory.
+        You are a helpful assistant with memory, your name is Lama.
 
         The memory sections below include:
         - USER PROFILE: Facts about the current user
@@ -98,7 +98,6 @@ def chat(user_id: str, user_input: str, memory, instructions) -> str:
 
         Use these to personalize your answers if needed. You goal is to maintain human-like conversation.
         Reply in this conversation style: {instructions}.
-        If a user or name appears in conversation, use memory to search for anything relevant to provide a helpful answer.
         If you don't know something, say so. If you need to guess, make it clear that it's a guess.
 
         ❗Important:
@@ -118,32 +117,29 @@ def chat(user_id: str, user_input: str, memory, instructions) -> str:
     return reply
 
 
-def chat_about_users(user_id: str, user_input: str, mentioned_users: list[str], all_profiles: dict) -> str:
+def chat_about_users(user_id: str, user_input: str, name, user_memory) -> str:
 
-    for mentioned_user in mentioned_users:
-        static = profile_to_description(all_profiles[mentioned_user], mentioned_user)
-        hits = fuzzy_cache_retrieve(mentioned_user, user_input, top_k=15)
-        summary_hits = [m for m in hits if m["type"] == "summary"]
-        fact_hits = [m for m in hits if m["type"] == "fact"]
+    hits = fuzzy_cache_retrieve(name, user_input, top_k=15)
+    summary_hits = [m for m in hits if m["type"] == "summary"]
+    fact_hits = [m for m in hits if m["type"] == "fact"]
 
-        dynamic = []
-        if summary_hits:
-            dynamic.append("[SUMMARY MEMORY]")
-            dynamic.extend([f"• {s['content']}" for s in summary_hits])
-        if fact_hits:
-            dynamic.append("[FACT MEMORY]")
-            dynamic.extend([f"• {f['content']}" for f in fact_hits])
+    dynamic = []
+    if summary_hits:
+        dynamic.append("[SUMMARY MEMORY]")
+        dynamic.extend([f"• {s['content']}" for s in summary_hits])
+    if fact_hits:
+        dynamic.append("[FACT MEMORY]")
+        dynamic.extend([f"• {f['content']}" for f in fact_hits])
 
-        dynamic_str = '\n'.join(dynamic) if dynamic else '(none found)'
-        other_prompt = (
-            f"You were asked about user {mentioned_user}.\nPronouns in the next sentences like 'him' or 'her' are likely referring to this user. Use this information to answer accurately."
-            f"\n[STATIC PROFILE]\n{static}"
-            f"\n\n[DYNAMIC MEMORY]\n{dynamic_str}"
-            f"\n\nUse these to personalize your answers."
-            f"\n\nUser: {user_input}"
-        )
+    dynamic_str = '\n'.join(dynamic) if dynamic else '(none found)'
+    other_prompt = (
+        f"You were asked about user {name}.\nPronouns in the next sentences like 'him' or 'her' are likely referring to this user. Here is the mentioned user's profile, use this information to answer the question:\n\n"
+        f"\n[STATIC PROFILE]\n{user_memory}"
+        f"\n\n[DYNAMIC MEMORY]\n{dynamic_str}"
+        f"\n\nThe question about this user: {user_input}"
+    )
 
-        reply = ask_ollama(other_prompt)
-        print(f"Lama: {reply}")
+    reply = ask_ollama(other_prompt)
+    print(f"Lama: {reply}")
 
     return reply  # Last reply returned for now
