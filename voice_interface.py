@@ -248,7 +248,6 @@ def stream_until_silence(chunk_duration=6.0, silence_threshold=1.5, max_total_du
 
 # region User interrupt detection
 
-
 def detect_user_interrupt(similarity_threshold=0.80) -> bool:
     if interrupt_audio_queue.empty():
         return False
