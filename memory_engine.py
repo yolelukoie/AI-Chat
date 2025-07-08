@@ -16,7 +16,9 @@ MEMORY_COMPRESSED = "compressed"
 print("🔄 memory_engine initialized, collections loaded.")
 
 # Load embedding model
-embedding_model = SentenceTransformer("D:/AI Chat/paraphrase-multilingual-MiniLM-L12-v2")
+# embedding_model = SentenceTransformer("D:/AI Chat/paraphrase-multilingual-MiniLM-L12-v2") # for PC
+embedding_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2") # for Mac
+
 
 def get_collections(user_id: str):
     client = PersistentClient(path="chroma_store")
